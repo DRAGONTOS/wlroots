@@ -763,11 +763,9 @@ xcursor_load_theme(const char *theme, int size,
 			continue;
 
 		full = xcursor_build_fullname(dir, "cursors", "");
-		if (full) {
-			load_all_cursors_from_dir(full, size, load_callback,
-						  user_data);
-			free(full);
-		}
+		load_all_cursors_from_dir(full, size, load_callback,
+					  user_data);
+		free(full);
 
 		if (!inherits) {
 			full = xcursor_build_fullname(dir, "", "index.theme");

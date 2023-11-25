@@ -5,7 +5,6 @@
 #include <wlr/util/log.h>
 #include <wlr/util/edges.h>
 #include "types/wlr_xdg_shell.h"
-#include "util/utf8.h"
 
 void handle_xdg_toplevel_ack_configure(
 		struct wlr_xdg_toplevel *toplevel,
@@ -159,14 +158,6 @@ struct wlr_xdg_toplevel *wlr_xdg_toplevel_from_resource(
 	return wl_resource_get_user_data(resource);
 }
 
-struct wlr_xdg_toplevel *wlr_xdg_toplevel_try_from_wlr_surface(struct wlr_surface *surface) {
-	struct wlr_xdg_surface *xdg_surface = wlr_xdg_surface_try_from_wlr_surface(surface);
-	if (xdg_surface == NULL || xdg_surface->role != WLR_XDG_SURFACE_ROLE_TOPLEVEL) {
-		return NULL;
-	}
-	return xdg_surface->toplevel;
-}
-
 static void handle_parent_unmap(struct wl_listener *listener, void *data) {
 	struct wlr_xdg_toplevel *toplevel =
 		wl_container_of(listener, toplevel, parent_unmap);
@@ -224,12 +215,6 @@ static void xdg_toplevel_handle_set_title(struct wl_client *client,
 	struct wlr_xdg_toplevel *toplevel =
 		wlr_xdg_toplevel_from_resource(resource);
 	char *tmp;
-
-	if (!is_utf8(title)) {
-		// TODO: update when xdg_toplevel has a dedicated error code for this
-		wl_resource_post_error(resource, (uint32_t)-1, "xdg_toplevel title is not valid UTF-8");
-		return;
-	}
 
 	tmp = strdup(title);
 	if (tmp == NULL) {

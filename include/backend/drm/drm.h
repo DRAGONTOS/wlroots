@@ -104,8 +104,6 @@ struct wlr_drm_backend {
 	struct wl_list fbs; // wlr_drm_fb.link
 	struct wl_list connectors; // wlr_drm_connector.link
 
-	struct wl_list page_flips; // wlr_drm_page_flip.link
-
 	/* Only initialized on multi-GPU setups */
 	struct wlr_drm_renderer mgpu_renderer;
 
@@ -126,27 +124,9 @@ struct wlr_drm_mode {
 struct wlr_drm_connector_state {
 	const struct wlr_output_state *base;
 	bool modeset;
-	bool nonblock;
 	bool active;
 	drmModeModeInfo mode;
 	struct wlr_drm_fb *primary_fb;
-};
-
-/**
- * Per-page-flip tracking struct.
- *
- * We've asked for a state change in the kernel, and yet to receive a
- * notification for its completion. Currently, the kernel only has a queue
- * length of 1, and no way to modify your submissions after they're sent.
- *
- * However, we might have multiple in-flight page-flip events, for instance
- * when performing a non-blocking commit followed by a blocking commit. In
- * that case, conn will be set to NULL on the non-blocking commit to indicate
- * that it's been superseded.
- */
-struct wlr_drm_page_flip {
-	struct wl_list link; // wlr_drm_connector.page_flips
-	struct wlr_drm_connector *conn;
 };
 
 struct wlr_drm_connector {
@@ -173,8 +153,14 @@ struct wlr_drm_connector {
 
 	struct wl_list link; // wlr_drm_backend.connectors
 
-	// Last committed page-flip
-	struct wlr_drm_page_flip *pending_page_flip;
+	/* CRTC ID if a page-flip is pending, zero otherwise.
+	 *
+	 * We've asked for a state change in the kernel, and yet to receive a
+	 * notification for its completion. Currently, the kernel only has a
+	 * queue length of 1, and no way to modify your submissions after
+	 * they're sent.
+	 */
+	uint32_t pending_page_flip_crtc;
 };
 
 struct wlr_drm_backend *get_drm_backend_from_backend(
@@ -194,7 +180,6 @@ bool drm_connector_supports_vrr(struct wlr_drm_connector *conn);
 size_t drm_crtc_get_gamma_lut_size(struct wlr_drm_backend *drm,
 	struct wlr_drm_crtc *crtc);
 void drm_lease_destroy(struct wlr_drm_lease *lease);
-void drm_page_flip_destroy(struct wlr_drm_page_flip *page_flip);
 
 struct wlr_drm_fb *get_next_cursor_fb(struct wlr_drm_connector *conn);
 struct wlr_drm_layer *get_drm_layer(struct wlr_drm_backend *drm,

@@ -45,7 +45,7 @@ struct wlr_linux_dmabuf_v1;
 struct wlr_output_state;
 
 typedef bool (*wlr_scene_buffer_point_accepts_input_func_t)(
-	struct wlr_scene_buffer *buffer, double *sx, double *sy);
+	struct wlr_scene_buffer *buffer, int sx, int sy);
 
 typedef void (*wlr_scene_buffer_iterator_func_t)(
 	struct wlr_scene_buffer *buffer, int sx, int sy, void *user_data);
@@ -118,8 +118,6 @@ struct wlr_scene_surface {
 	struct wlr_surface *surface;
 
 	// private state
-
-	struct wlr_box clip;
 
 	struct wlr_addon addon;
 
@@ -542,16 +540,6 @@ void wlr_scene_output_layout_add_output(struct wlr_scene_output_layout *sol,
  */
 struct wlr_scene_tree *wlr_scene_subsurface_tree_create(
 	struct wlr_scene_tree *parent, struct wlr_surface *surface);
-
-/**
- * Sets a cropping region for any subsurface trees that are children of this
- * scene node. The clip coordinate space will be that of the root surface of
- * the subsurface tree.
- *
- * A NULL or empty clip will disable clipping
- */
-void wlr_scene_subsurface_tree_set_clip(struct wlr_scene_node *node,
-	struct wlr_box *clip);
 
 /**
  * Add a node displaying an xdg_surface and all of its sub-surfaces to the

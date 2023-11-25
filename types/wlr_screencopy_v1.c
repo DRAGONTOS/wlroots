@@ -9,7 +9,6 @@
 #include <wlr/backend.h>
 #include <wlr/util/box.h>
 #include <wlr/util/log.h>
-#include <wlr/util/transform.h>
 #include "wlr-screencopy-unstable-v1-protocol.h"
 #include "render/pixel_format.h"
 #include "render/wlr_renderer.h"
@@ -197,8 +196,8 @@ static bool frame_shm_copy(struct wlr_screencopy_frame_v1 *frame,
 
 	int x = frame->box.x;
 	int y = frame->box.y;
-	int width = frame->box.width;
-	int height = frame->box.height;
+	int width = frame->buffer->width;
+	int height = frame->buffer->height;
 
 	void *data;
 	uint32_t format;
@@ -228,6 +227,11 @@ static bool frame_dma_copy(struct wlr_screencopy_frame_v1 *frame,
 	struct wlr_renderer *renderer = output->renderer;
 	assert(renderer);
 
+	if (frame->box.x < 0 || frame->box.y < 0 ||
+			frame->box.x + frame->box.width > src_buffer->width ||
+			frame->box.y + frame->box.height > src_buffer->height) {
+		return false;
+	}
 
 	struct wlr_texture *src_tex =
 		wlr_texture_from_buffer(renderer, src_buffer);
@@ -246,10 +250,6 @@ static bool frame_dma_copy(struct wlr_screencopy_frame_v1 *frame,
 	wlr_render_pass_add_texture(pass, &(struct wlr_render_texture_options) {
 		.texture = src_tex,
 		.blend_mode = WLR_RENDER_BLEND_MODE_NONE,
-		.dst_box = (struct wlr_box){
-			.width = dst_buffer->width,
-			.height = dst_buffer->height,
-		},
 		.src_box = (struct wlr_fbox){
 			.x = frame->box.x,
 			.y = frame->box.y,
@@ -293,36 +293,26 @@ static void frame_handle_output_commit(struct wl_listener *listener,
 	wl_list_remove(&frame->output_commit.link);
 	wl_list_init(&frame->output_commit.link);
 
-	struct wlr_buffer *src_buffer = event->state->buffer;
-	if (frame->box.x < 0 || frame->box.y < 0 ||
-			frame->box.x + frame->box.width > src_buffer->width ||
-			frame->box.y + frame->box.height > src_buffer->height) {
-		goto err;
-	}
-
+	bool ok;
 	switch (frame->buffer_cap) {
 	case WLR_BUFFER_CAP_DMABUF:
-		if (!frame_dma_copy(frame, src_buffer)) {
-			goto err;
-		}
+		ok = frame_dma_copy(frame, event->state->buffer);
 		break;
 	case WLR_BUFFER_CAP_DATA_PTR:
-		if (!frame_shm_copy(frame, src_buffer)) {
-			goto err;
-		}
+		ok = frame_shm_copy(frame, event->state->buffer);
 		break;
 	default:
 		abort(); // unreachable
+	}
+	if (!ok) {
+		zwlr_screencopy_frame_v1_send_failed(frame->resource);
+		frame_destroy(frame);
+		return;
 	}
 
 	zwlr_screencopy_frame_v1_send_flags(frame->resource, 0);
 	frame_send_damage(frame);
 	frame_send_ready(frame, event->when);
-	frame_destroy(frame);
-	return;
-
-err:
-	zwlr_screencopy_frame_v1_send_failed(frame->resource);
 	frame_destroy(frame);
 }
 

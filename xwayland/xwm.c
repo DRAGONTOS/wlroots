@@ -411,10 +411,6 @@ static void xwayland_surface_dissociate(struct wlr_xwayland_surface *xsurface) {
 	wl_list_init(&xsurface->unpaired_link);
 	xsurface->surface_id = 0;
 	xsurface->serial = 0;
-
-	wl_list_remove(&xsurface->stack_link);
-	wl_list_init(&xsurface->stack_link);
-	xwm_set_net_client_list_stacking(xsurface->xwm);
 }
 
 static void xwayland_surface_destroy(struct wlr_xwayland_surface *xsurface) {
@@ -427,6 +423,7 @@ static void xwayland_surface_destroy(struct wlr_xwayland_surface *xsurface) {
 	}
 
 	wl_list_remove(&xsurface->link);
+	wl_list_remove(&xsurface->stack_link);
 	wl_list_remove(&xsurface->parent_link);
 
 	struct wlr_xwayland_surface *child, *next;
@@ -1002,24 +999,6 @@ static void xwm_handle_configure_request(struct wlr_xwm *xwm,
 	wl_signal_emit_mutable(&surface->events.request_configure, &wlr_event);
 }
 
-static void xwm_update_override_redirect(struct wlr_xwayland_surface *xsurface,
-		bool override_redirect) {
-	if (xsurface->override_redirect == override_redirect) {
-		return;
-	}
-	xsurface->override_redirect = override_redirect;
-
-	if (override_redirect) {
-		wl_list_remove(&xsurface->stack_link);
-		wl_list_init(&xsurface->stack_link);
-		xwm_set_net_client_list_stacking(xsurface->xwm);
-	} else if (xsurface->surface != NULL && xsurface->surface->mapped) {
-		wlr_xwayland_surface_restack(xsurface, NULL, XCB_STACK_MODE_BELOW);
-	}
-
-	wl_signal_emit_mutable(&xsurface->events.set_override_redirect, NULL);
-}
-
 static void xwm_handle_configure_notify(struct wlr_xwm *xwm,
 		xcb_configure_notify_event_t *ev) {
 	struct wlr_xwayland_surface *xsurface = lookup_surface(xwm, ev->window);
@@ -1038,7 +1017,10 @@ static void xwm_handle_configure_notify(struct wlr_xwm *xwm,
 		xsurface->height = ev->height;
 	}
 
-	xwm_update_override_redirect(xsurface, ev->override_redirect);
+	if (xsurface->override_redirect != ev->override_redirect) {
+		xsurface->override_redirect = ev->override_redirect;
+		wl_signal_emit_mutable(&xsurface->events.set_override_redirect, NULL);
+	}
 
 	if (geometry_changed) {
 		wl_signal_emit_mutable(&xsurface->events.set_geometry, NULL);
@@ -1073,18 +1055,6 @@ void wlr_xwayland_surface_restack(struct wlr_xwayland_surface *xsurface,
 	size_t idx = 0;
 	uint32_t flags = XCB_CONFIG_WINDOW_STACK_MODE;
 
-	assert(!xsurface->override_redirect);
-
-	// X11 clients expect their override_redirect windows to stay on top.
-	// Avoid interfering by restacking above the topmost managed surface.
-	if (mode == XCB_STACK_MODE_ABOVE && !sibling) {
-		sibling = wl_container_of(xwm->surfaces_in_stack_order.prev, sibling, stack_link);
-	}
-
-	if (sibling == xsurface) {
-		return;
-	}
-
 	if (sibling != NULL) {
 		values[idx++] = sibling->window_id;
 		flags |= XCB_CONFIG_WINDOW_SIBLING;
@@ -1097,7 +1067,11 @@ void wlr_xwayland_surface_restack(struct wlr_xwayland_surface *xsurface,
 
 	struct wl_list *node;
 	if (mode == XCB_STACK_MODE_ABOVE) {
-		node = &sibling->stack_link;
+		if (sibling) {
+			node = &sibling->stack_link;
+		} else {
+			node = xwm->surfaces_in_stack_order.prev;
+		}
 	} else if (mode == XCB_STACK_MODE_BELOW) {
 		if (sibling) {
 			node = sibling->stack_link.prev;
@@ -1134,7 +1108,10 @@ static void xwm_handle_map_notify(struct wlr_xwm *xwm,
 		return;
 	}
 
-	xwm_update_override_redirect(xsurface, ev->override_redirect);
+	if (xsurface->override_redirect != ev->override_redirect) {
+		xsurface->override_redirect = ev->override_redirect;
+		wl_signal_emit_mutable(&xsurface->events.set_override_redirect, NULL);
+	}
 }
 
 static void xwm_handle_unmap_notify(struct wlr_xwm *xwm,
@@ -1667,8 +1644,7 @@ static int x11_event_handler(int fd, uint32_t mask, void *data) {
 
 		if (xwm->xwayland->user_event_handler &&
 				xwm->xwayland->user_event_handler(xwm, event)) {
-			free(event);
-			continue;
+			break;
 		}
 
 		if (xwm_handle_selection_event(xwm, event)) {

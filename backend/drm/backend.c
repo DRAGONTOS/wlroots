@@ -35,16 +35,15 @@ static void backend_destroy(struct wlr_backend *backend) {
 
 	struct wlr_drm_connector *conn, *next;
 	wl_list_for_each_safe(conn, next, &drm->connectors, link) {
-		conn->crtc = NULL; // leave CRTCs on when shutting down
 		destroy_drm_connector(conn);
 	}
 
-	struct wlr_drm_page_flip *page_flip, *page_flip_tmp;
-	wl_list_for_each_safe(page_flip, page_flip_tmp, &drm->page_flips, link) {
-		drm_page_flip_destroy(page_flip);
-	}
-
 	wlr_backend_finish(backend);
+
+	struct wlr_drm_fb *fb, *fb_tmp;
+	wl_list_for_each_safe(fb, fb_tmp, &drm->fbs, link) {
+		drm_fb_destroy(fb);
+	}
 
 	wl_list_remove(&drm->display_destroy.link);
 	wl_list_remove(&drm->session_destroy.link);
@@ -58,11 +57,6 @@ static void backend_destroy(struct wlr_backend *backend) {
 	}
 
 	finish_drm_resources(drm);
-
-	struct wlr_drm_fb *fb, *fb_tmp;
-	wl_list_for_each_safe(fb, fb_tmp, &drm->fbs, link) {
-		drm_fb_destroy(fb);
-	}
 
 	free(drm->name);
 	wlr_session_close_file(drm->session, drm->dev);
@@ -212,7 +206,6 @@ struct wlr_backend *wlr_drm_backend_create(struct wl_display *display,
 	drm->session = session;
 	wl_list_init(&drm->fbs);
 	wl_list_init(&drm->connectors);
-	wl_list_init(&drm->page_flips);
 
 	drm->dev = dev;
 	drm->fd = dev->fd;

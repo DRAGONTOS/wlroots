@@ -1,0 +1,1 @@
+cmd='meson;setup;build;--buildtype=release;-Dwerror=false;-Dexamples=false;-Drenderers=gles2;$<IF:$<BOOL:>,-Db_sanitize=address,-Db_sanitize=none>;&&;meson;setup;build;--buildtype=release;-Dwerror=false;-Dexamples=false;-Drenderers=gles2;$<IF:$<BOOL:>,-Db_sanitize=address,-Db_sanitize=none>;--reconfigure'

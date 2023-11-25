@@ -10,7 +10,6 @@
 #include <wlr/types/wlr_output.h>
 #include <wlr/util/log.h>
 #include <wlr/util/region.h>
-#include <wlr/util/transform.h>
 #include "types/wlr_buffer.h"
 #include "types/wlr_region.h"
 #include "types/wlr_subcompositor.h"
@@ -146,10 +145,16 @@ static void surface_handle_set_input_region(struct wl_client *client,
 }
 
 static void surface_state_transformed_buffer_size(struct wlr_surface_state *state,
-		int *width, int *height) {
-	*width = state->buffer_width;
-	*height = state->buffer_height;
-	wlr_output_transform_coords(state->transform, width, height);
+		int *out_width, int *out_height) {
+	int width = state->buffer_width;
+	int height = state->buffer_height;
+	if ((state->transform & WL_OUTPUT_TRANSFORM_90) != 0) {
+		int tmp = width;
+		width = height;
+		height = tmp;
+	}
+	*out_width = width;
+	*out_height = height;
 }
 
 /**

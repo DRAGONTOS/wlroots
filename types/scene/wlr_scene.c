@@ -13,7 +13,6 @@
 #include <wlr/types/wlr_scene.h>
 #include <wlr/util/log.h>
 #include <wlr/util/region.h>
-#include <wlr/util/transform.h>
 #include "types/wlr_buffer.h"
 #include "types/wlr_output.h"
 #include "types/wlr_scene.h"
@@ -334,8 +333,7 @@ static void scene_damage_outputs(struct wlr_scene *scene, pixman_region32_t *dam
 }
 
 static void update_node_update_outputs(struct wlr_scene_node *node,
-		struct wl_list *outputs, struct wlr_scene_output *ignore,
-		struct wlr_scene_output *force) {
+		struct wl_list *outputs, struct wlr_scene_output *ignore) {
 	if (node->type != WLR_SCENE_NODE_BUFFER) {
 		return;
 	}
@@ -415,10 +413,8 @@ static void update_node_update_outputs(struct wlr_scene_node *node,
 	// output
 	assert(!scene_buffer->active_outputs || scene_buffer->primary_output);
 
-	// Skip output update event if nothing was updated
-	if (old_active == active_outputs &&
-			(!force || ((1ull << force->index) & ~active_outputs)) &&
-			old_primary_output == scene_buffer->primary_output) {
+	// if no outputs changes intersection status, skip calling outputs_update
+	if (old_active == active_outputs) {
 		return;
 	}
 
@@ -461,7 +457,7 @@ static bool scene_node_update_iterator(struct wlr_scene_node *node,
 		pixman_region32_fini(&opaque);
 	}
 
-	update_node_update_outputs(node, data->outputs, NULL, NULL);
+	update_node_update_outputs(node, data->outputs, NULL);
 
 	return false;
 }
@@ -879,9 +875,13 @@ static void scene_node_get_size(struct wlr_scene_node *node,
 			*width = scene_buffer->dst_width;
 			*height = scene_buffer->dst_height;
 		} else if (scene_buffer->buffer) {
-			*width = scene_buffer->buffer->width;
-			*height = scene_buffer->buffer->height;
-			wlr_output_transform_coords(scene_buffer->transform, width, height);
+			if (scene_buffer->transform & WL_OUTPUT_TRANSFORM_90) {
+				*height = scene_buffer->buffer->width;
+				*width = scene_buffer->buffer->height;
+			} else {
+				*width = scene_buffer->buffer->width;
+				*height = scene_buffer->buffer->height;
+			}
 		}
 		break;
 	}
@@ -1064,7 +1064,7 @@ static bool scene_node_at_iterator(struct wlr_scene_node *node,
 		struct wlr_scene_buffer *scene_buffer = wlr_scene_buffer_from_node(node);
 
 		if (scene_buffer->point_accepts_input &&
-				!scene_buffer->point_accepts_input(scene_buffer, &rx, &ry)) {
+				!scene_buffer->point_accepts_input(scene_buffer, rx, ry)) {
 			return false;
 		}
 	}
@@ -1240,27 +1240,25 @@ static const struct wlr_addon_interface output_addon_impl = {
 };
 
 static void scene_node_output_update(struct wlr_scene_node *node,
-		struct wl_list *outputs, struct wlr_scene_output *ignore,
-		struct wlr_scene_output *force) {
+		struct wl_list *outputs, struct wlr_scene_output *ignore) {
 	if (node->type == WLR_SCENE_NODE_TREE) {
 		struct wlr_scene_tree *scene_tree = wlr_scene_tree_from_node(node);
 		struct wlr_scene_node *child;
 		wl_list_for_each(child, &scene_tree->children, link) {
-			scene_node_output_update(child, outputs, ignore, force);
+			scene_node_output_update(child, outputs, ignore);
 		}
 		return;
 	}
 
-	update_node_update_outputs(node, outputs, ignore, force);
+	update_node_update_outputs(node, outputs, ignore);
 }
 
-static void scene_output_update_geometry(struct wlr_scene_output *scene_output,
-		bool force_update) {
+static void scene_output_update_geometry(struct wlr_scene_output *scene_output) {
 	wlr_damage_ring_add_whole(&scene_output->damage_ring);
 	wlr_output_schedule_frame(scene_output->output);
 
 	scene_node_output_update(&scene_output->scene->tree.node,
-			&scene_output->scene->outputs, NULL, force_update ? scene_output : NULL);
+			&scene_output->scene->outputs, NULL);
 }
 
 static void scene_output_handle_commit(struct wl_listener *listener, void *data) {
@@ -1269,14 +1267,11 @@ static void scene_output_handle_commit(struct wl_listener *listener, void *data)
 	struct wlr_output_event_commit *event = data;
 	const struct wlr_output_state *state = event->state;
 
-	bool force_update = state->committed & (
-		WLR_OUTPUT_STATE_TRANSFORM |
-		WLR_OUTPUT_STATE_SCALE |
-		WLR_OUTPUT_STATE_SUBPIXEL);
-
-	if (force_update || state->committed & (WLR_OUTPUT_STATE_MODE |
+	if (state->committed & (WLR_OUTPUT_STATE_MODE |
+			WLR_OUTPUT_STATE_TRANSFORM |
+			WLR_OUTPUT_STATE_SCALE |
 			WLR_OUTPUT_STATE_ENABLED)) {
-		scene_output_update_geometry(scene_output, force_update);
+		scene_output_update_geometry(scene_output);
 	}
 }
 
@@ -1337,7 +1332,7 @@ struct wlr_scene_output *wlr_scene_output_create(struct wlr_scene *scene,
 	scene_output->output_needs_frame.notify = scene_output_handle_needs_frame;
 	wl_signal_add(&output->events.needs_frame, &scene_output->output_needs_frame);
 
-	scene_output_update_geometry(scene_output, false);
+	scene_output_update_geometry(scene_output);
 
 	return scene_output;
 }
@@ -1356,7 +1351,7 @@ void wlr_scene_output_destroy(struct wlr_scene_output *scene_output) {
 	wl_signal_emit_mutable(&scene_output->events.destroy, NULL);
 
 	scene_node_output_update(&scene_output->scene->tree.node,
-		&scene_output->scene->outputs, scene_output, NULL);
+		&scene_output->scene->outputs, scene_output);
 
 	struct highlight_region *damage, *tmp_damage;
 	wl_list_for_each_safe(damage, tmp_damage, &scene_output->damage_highlight_regions, link) {
@@ -1395,7 +1390,7 @@ void wlr_scene_output_set_position(struct wlr_scene_output *scene_output,
 	scene_output->x = lx;
 	scene_output->y = ly;
 
-	scene_output_update_geometry(scene_output, false);
+	scene_output_update_geometry(scene_output);
 }
 
 static bool scene_node_invisible(struct wlr_scene_node *node) {
@@ -1540,13 +1535,14 @@ static bool scene_entry_try_direct_scanout(struct render_list_entry *entry,
 
 	struct wlr_scene_buffer *buffer = wlr_scene_buffer_from_node(node);
 
-	int default_width = buffer->buffer->width;
-	int default_height = buffer->buffer->height;
-	wlr_output_transform_coords(buffer->transform, &default_width, &default_height);
-	struct wlr_fbox default_box = {
-		.width = default_width,
-		.height = default_height,
-	};
+	struct wlr_fbox default_box = {0};
+	if (buffer->transform & WL_OUTPUT_TRANSFORM_90) {
+		default_box.width = buffer->buffer->height;
+		default_box.height = buffer->buffer->width;
+	} else {
+		default_box.width = buffer->buffer->width;
+		default_box.height = buffer->buffer->height;
+	}
 
 	if (!wlr_fbox_empty(&buffer->src_box) &&
 			!wlr_fbox_equal(&buffer->src_box, &default_box)) {
@@ -1674,8 +1670,11 @@ bool wlr_scene_output_build_state(struct wlr_scene_output *scene_output,
 		render_data.scale = state->scale;
 	}
 
-	wlr_output_transform_coords(render_data.transform,
-		&render_data.trans_width, &render_data.trans_height);
+	if (render_data.transform & WL_OUTPUT_TRANSFORM_90) {
+		int tmp = render_data.trans_width;
+		render_data.trans_width = render_data.trans_height;
+		render_data.trans_height = tmp;
+	}
 
 	render_data.logical.width = render_data.trans_width / render_data.scale;
 	render_data.logical.height = render_data.trans_height / render_data.scale;
