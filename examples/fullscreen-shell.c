@@ -11,7 +11,6 @@
 #include <wlr/render/wlr_renderer.h>
 #include <wlr/types/wlr_compositor.h>
 #include <wlr/types/wlr_fullscreen_shell_v1.h>
-#include <wlr/types/wlr_matrix.h>
 #include <wlr/types/wlr_output_layout.h>
 #include <wlr/types/wlr_output.h>
 #include <wlr/util/box.h>
@@ -163,7 +162,7 @@ static void server_handle_new_output(struct wl_listener *listener, void *data) {
 	wl_list_insert(&server->outputs, &output->link);
 
 	wlr_output_layout_add_auto(server->output_layout, wlr_output);
-	wlr_output_create_global(wlr_output);
+	wlr_output_create_global(wlr_output, server->wl_display);
 
 	struct wlr_output_state state;
 	wlr_output_state_init(&state);
@@ -221,7 +220,7 @@ int main(int argc, char *argv[]) {
 
 	wlr_compositor_create(server.wl_display, 5, server.renderer);
 
-	server.output_layout = wlr_output_layout_create();
+	server.output_layout = wlr_output_layout_create(server.wl_display);
 
 	wl_list_init(&server.outputs);
 	server.new_output.notify = server_handle_new_output;

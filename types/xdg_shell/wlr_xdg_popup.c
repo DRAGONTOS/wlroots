@@ -236,16 +236,16 @@ static struct wlr_xdg_popup_grab *get_xdg_shell_popup_grab_from_seat(
 	return xdg_grab;
 }
 
-void handle_xdg_popup_committed(struct wlr_xdg_popup *popup) {
+void handle_xdg_popup_client_commit(struct wlr_xdg_popup *popup) {
 	if (!popup->parent) {
 		wl_resource_post_error(popup->base->resource,
 			XDG_SURFACE_ERROR_NOT_CONSTRUCTED,
 			"xdg_popup has no parent");
 		return;
 	}
+}
 
-	popup->current = popup->pending;
-
+void handle_xdg_popup_committed(struct wlr_xdg_popup *popup) {
 	if (popup->base->initial_commit && !popup->sent_initial_configure) {
 		wlr_xdg_surface_schedule_configure(popup->base);
 		popup->sent_initial_configure = true;
@@ -358,6 +358,10 @@ static const struct xdg_popup_interface xdg_popup_implementation = {
 	.reposition = xdg_popup_handle_reposition,
 };
 
+static const struct wlr_surface_synced_impl surface_synced_impl = {
+	.state_size = sizeof(struct wlr_xdg_popup_state),
+};
+
 static void xdg_popup_handle_resource_destroy(struct wl_resource *resource) {
 	struct wlr_xdg_popup *popup =
 		wlr_xdg_popup_from_resource(resource);
@@ -396,14 +400,17 @@ void create_xdg_popup(struct wlr_xdg_surface *surface,
 	}
 	surface->popup->base = surface;
 
+	if (!wlr_surface_synced_init(&surface->popup->synced, surface->surface,
+			&surface_synced_impl, &surface->popup->pending,
+			&surface->popup->current)) {
+		goto error_popup;
+	}
+
 	surface->popup->resource = wl_resource_create(
 		surface->client->client, &xdg_popup_interface,
 		wl_resource_get_version(surface->resource), id);
 	if (surface->popup->resource == NULL) {
-		free(surface->popup);
-		surface->popup = NULL;
-		wl_resource_post_no_memory(surface->resource);
-		return;
+		goto error_synced;
 	}
 	wl_resource_set_implementation(surface->popup->resource,
 		&xdg_popup_implementation, surface->popup,
@@ -415,6 +422,7 @@ void create_xdg_popup(struct wlr_xdg_surface *surface,
 		&positioner->rules, &surface->popup->scheduled.geometry);
 	surface->popup->scheduled.rules = positioner->rules;
 
+	wl_signal_init(&surface->popup->events.destroy);
 	wl_signal_init(&surface->popup->events.reposition);
 
 	if (parent) {
@@ -426,6 +434,17 @@ void create_xdg_popup(struct wlr_xdg_surface *surface,
 	}
 
 	set_xdg_surface_role_object(surface, surface->popup->resource);
+
+	wl_signal_emit_mutable(&surface->client->shell->events.new_popup, surface->popup);
+
+	return;
+
+error_synced:
+	wlr_surface_synced_finish(&surface->popup->synced);
+error_popup:
+	free(surface->popup);
+	surface->popup = NULL;
+	wl_resource_post_no_memory(surface->resource);
 }
 
 void reset_xdg_popup(struct wlr_xdg_popup *popup) {
@@ -460,14 +479,10 @@ void destroy_xdg_popup(struct wlr_xdg_popup *popup) {
 	wlr_surface_unmap(popup->base->surface);
 	reset_xdg_popup(popup);
 
-	// TODO: improve events
-	if (popup->base->added) {
-		wl_signal_emit_mutable(&popup->base->events.destroy, NULL);
-		popup->base->added = false;
-	}
+	wl_signal_emit_mutable(&popup->events.destroy, NULL);
 
+	wlr_surface_synced_finish(&popup->synced);
 	popup->base->popup = NULL;
-
 	wl_list_remove(&popup->link);
 	wl_resource_set_user_data(popup->resource, NULL);
 	free(popup);

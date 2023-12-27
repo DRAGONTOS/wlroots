@@ -87,7 +87,7 @@ int vulkan_find_mem_type(struct wlr_vk_device *device,
 struct wlr_vk_format {
 	uint32_t drm;
 	VkFormat vk;
-	bool is_srgb;
+	VkFormat vk_srgb; // sRGB version of the format, or 0 if nonexistent
 	bool is_ycbcr;
 };
 
@@ -101,6 +101,7 @@ const struct wlr_vk_format *vulkan_get_format_from_drm(uint32_t drm_format);
 struct wlr_vk_format_modifier_props {
 	VkDrmFormatModifierPropertiesEXT props;
 	VkExtent2D max_extent;
+	bool has_mutable_srgb;
 };
 
 struct wlr_vk_format_props {
@@ -109,6 +110,7 @@ struct wlr_vk_format_props {
 	struct {
 		VkExtent2D max_extent;
 		VkFormatFeatureFlags features;
+		bool has_mutable_srgb;
 	} shm;
 
 	struct {
@@ -123,7 +125,7 @@ struct wlr_vk_format_props {
 void vulkan_format_props_query(struct wlr_vk_device *dev,
 	const struct wlr_vk_format *format);
 const struct wlr_vk_format_modifier_props *vulkan_format_props_find_modifier(
-	struct wlr_vk_format_props *props, uint64_t mod, bool render);
+	const struct wlr_vk_format_props *props, uint64_t mod, bool render);
 void vulkan_format_props_finish(struct wlr_vk_format_props *props);
 
 struct wlr_vk_pipeline_layout_key {
@@ -252,17 +254,6 @@ struct wlr_vk_renderer {
 	VkSemaphore timeline_semaphore;
 	uint64_t timeline_point;
 
-	struct wlr_vk_render_buffer *current_render_buffer;
-	struct wlr_vk_command_buffer *current_command_buffer;
-
-	VkRect2D scissor; // needed for clearing
-
-	VkPipeline bound_pipe;
-
-	uint32_t render_width;
-	uint32_t render_height;
-	float projection[9];
-
 	size_t last_pool_size;
 	struct wl_list descriptor_pools; // wlr_vk_descriptor_pool.link
 	struct wl_list render_format_setups; // wlr_vk_render_format_setup.link
@@ -383,6 +374,12 @@ bool vulkan_sync_render_buffer(struct wlr_vk_renderer *renderer,
 	struct wlr_vk_render_buffer *render_buffer, struct wlr_vk_command_buffer *cb);
 bool vulkan_sync_foreign_texture(struct wlr_vk_texture *texture);
 
+bool vulkan_read_pixels(struct wlr_vk_renderer *vk_renderer,
+	VkFormat src_format, VkImage src_image,
+	uint32_t drm_format, uint32_t stride,
+	uint32_t width, uint32_t height, uint32_t src_x, uint32_t src_y,
+	uint32_t dst_x, uint32_t dst_y, void *data);
+
 // State (e.g. image texture) associated with a surface.
 struct wlr_vk_texture {
 	struct wlr_texture wlr_texture;
@@ -397,6 +394,7 @@ struct wlr_vk_texture {
 	bool owned; // if dmabuf_imported: whether we have ownership of the image
 	bool transitioned; // if dma_imported: whether we transitioned it away from preinit
 	bool has_alpha; // whether the image is has alpha channel
+	bool using_mutable_srgb; // is this accessed through _SRGB format view
 	struct wl_list foreign_link; // wlr_vk_renderer.foreign_textures
 	struct wl_list destroy_link; // wlr_vk_command_buffer.destroy_textures
 	struct wl_list link; // wlr_vk_renderer.textures
@@ -414,7 +412,7 @@ struct wlr_vk_texture *vulkan_get_texture(struct wlr_texture *wlr_texture);
 VkImage vulkan_import_dmabuf(struct wlr_vk_renderer *renderer,
 	const struct wlr_dmabuf_attributes *attribs,
 	VkDeviceMemory mems[static WLR_DMABUF_MAX_PLANES], uint32_t *n_mems,
-	bool for_render);
+	bool for_render, bool *using_mutable_srgb);
 struct wlr_texture *vulkan_texture_from_buffer(
 	struct wlr_renderer *wlr_renderer, struct wlr_buffer *buffer);
 void vulkan_texture_destroy(struct wlr_vk_texture *texture);

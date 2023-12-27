@@ -120,14 +120,13 @@ struct wlr_render_pass;
  * The `frame` event will be emitted when it is a good time for the compositor
  * to submit a new frame.
  *
- * To render a new frame, compositors should call wlr_output_attach_render(),
- * render and call wlr_output_commit(). No rendering should happen outside a
- * `frame` event handler or before wlr_output_attach_render().
+ * To render a new frame, compositors should call wlr_output_begin_render_pass(),
+ * perform rendering on that render pass and finally call wlr_output_commit().
  */
 struct wlr_output {
 	const struct wlr_output_impl *impl;
 	struct wlr_backend *backend;
-	struct wl_display *display;
+	struct wl_event_loop *event_loop;
 
 	struct wl_global *global;
 	struct wl_list resources;
@@ -153,7 +152,6 @@ struct wlr_output {
 	bool needs_frame;
 	// damage for cursors and fullscreen surface, in output-local coordinates
 	bool frame_pending;
-	float transform_matrix[9];
 
 	// true for example with VR headsets
 	bool non_desktop;
@@ -202,7 +200,6 @@ struct wlr_output {
 	struct wlr_allocator *allocator;
 	struct wlr_renderer *renderer;
 	struct wlr_swapchain *swapchain;
-	struct wlr_buffer *back_buffer;
 
 	struct wl_listener display_destroy;
 
@@ -279,14 +276,14 @@ struct wlr_surface;
  * wlr_output_commit().
  */
 void wlr_output_enable(struct wlr_output *output, bool enable);
-void wlr_output_create_global(struct wlr_output *output);
+void wlr_output_create_global(struct wlr_output *output, struct wl_display *display);
 void wlr_output_destroy_global(struct wlr_output *output);
 /**
  * Initialize the output's rendering subsystem with the provided allocator and
  * renderer. After initialization, this function may invoked again to reinitialize
  * the allocator and renderer to different values.
  *
- * Call this function prior to any call to wlr_output_attach_render(),
+ * Call this function prior to any call to wlr_output_begin_render_pass(),
  * wlr_output_commit() or wlr_output_cursor_create().
  *
  * The buffer capabilities of the provided must match the capabilities of the
@@ -350,7 +347,7 @@ void wlr_output_enable_adaptive_sync(struct wlr_output *output, bool enabled);
  * hardware and software permit this.
  *
  * This only affects the format of the output buffer used when rendering,
- * as with wlr_output_attach_render(). It has no impact on the cursor buffer
+ * as with wlr_output_begin_render_pass(). It has no impact on the cursor buffer
  * format, or on the formats supported for direct scan-out (see also
  * wlr_output_attach_buffer()).
  *
@@ -395,19 +392,6 @@ void wlr_output_transformed_resolution(struct wlr_output *output,
 void wlr_output_effective_resolution(struct wlr_output *output,
 	int *width, int *height);
 /**
- * Attach the renderer's buffer to the output. Compositors must call this
- * function before rendering. After they are done rendering, they should call
- * wlr_output_commit() to submit the new frame. The output needs to be
- * enabled.
- *
- * If non-NULL, `buffer_age` is set to the drawing buffer age in number of
- * frames or -1 if unknown. This is useful for damage tracking.
- *
- * If the compositor decides not to render after calling this function, it
- * must call wlr_output_rollback().
- */
-bool wlr_output_attach_render(struct wlr_output *output, int *buffer_age);
-/**
  * Attach a buffer to the output. Compositors should call wlr_output_commit()
  * to submit the new frame. The output needs to be enabled.
  *
@@ -416,11 +400,6 @@ bool wlr_output_attach_render(struct wlr_output *output, int *buffer_age);
  */
 void wlr_output_attach_buffer(struct wlr_output *output,
 	struct wlr_buffer *buffer);
-/**
- * Get the preferred format for reading pixels.
- * This function might change the current rendering context.
- */
-uint32_t wlr_output_preferred_read_format(struct wlr_output *output);
 /**
  * Set the damage region for the frame to be submitted. This is the region of
  * the screen that has changed since the last frame.
@@ -453,7 +432,7 @@ void wlr_output_set_layers(struct wlr_output *output,
  */
 bool wlr_output_test(struct wlr_output *output);
 /**
- * Commit the pending output state. If wlr_output_attach_render() has been
+ * Commit the pending output state. If wlr_output_begin_render_pass() has been
  * called, the pending frame will be submitted for display and a `frame` event
  * will be scheduled.
  *
@@ -724,9 +703,21 @@ bool wlr_output_configure_primary_swapchain(struct wlr_output *output,
 /**
  * Begin a render pass on this output.
  *
- * Same as wlr_output_attach_render(), but returns a struct wlr_render_pass.
+ * Compositors can call this function to begin rendering. After the render pass
+ * has been submitted, they should call wlr_output_commit_state() to submit the
+ * new frame.
+ *
+ * On error, NULL is returned. Creating a render pass on a disabled output is
+ * an error.
+ *
+ * The state describes the output changes the rendered frame will be
+ * committed with. A NULL state indicates no change.
+ *
+ * If non-NULL, buffer_age is set to the drawing buffer age in number of
+ * frames or -1 if unknown. This is useful for damage tracking.
  */
 struct wlr_render_pass *wlr_output_begin_render_pass(struct wlr_output *output,
-	struct wlr_output_state *state, int *buffer_age, struct wlr_render_timer *timer);
+	struct wlr_output_state *state, int *buffer_age,
+	struct wlr_buffer_pass_options *render_options);
 
 #endif

@@ -16,13 +16,13 @@
 #include <wlr/backend/interface.h>
 #include <wlr/interfaces/wlr_output.h>
 #include <wlr/render/wlr_renderer.h>
-#include <wlr/types/wlr_matrix.h>
 #include <wlr/util/box.h>
 #include <wlr/util/log.h>
 #include <wlr/util/transform.h>
 #include <xf86drm.h>
 #include <xf86drmMode.h>
 #include "backend/drm/drm.h"
+#include "backend/drm/fb.h"
 #include "backend/drm/iface.h"
 #include "backend/drm/util.h"
 #include "render/pixel_format.h"
@@ -303,6 +303,17 @@ error_crtcs:
 error_res:
 	drmModeFreeResources(res);
 	return false;
+}
+
+static void drm_plane_finish_surface(struct wlr_drm_plane *plane) {
+	if (!plane) {
+		return;
+	}
+
+	drm_fb_clear(&plane->queued_fb);
+	drm_fb_clear(&plane->current_fb);
+
+	finish_drm_surface(&plane->mgpu_surf);
 }
 
 void finish_drm_resources(struct wlr_drm_backend *drm) {
@@ -1467,7 +1478,7 @@ static bool connect_drm_connector(struct wlr_drm_connector *wlr_conn,
 
 	free(current_modeinfo);
 
-	wlr_output_init(output, &drm->backend, &output_impl, drm->display, &state);
+	wlr_output_init(output, &drm->backend, &output_impl, wl_display_get_event_loop(drm->display), &state);
 	wlr_output_state_finish(&state);
 
 	// fill out the modes

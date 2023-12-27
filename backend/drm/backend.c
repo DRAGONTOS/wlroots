@@ -12,6 +12,7 @@
 #include <wlr/util/log.h>
 #include <xf86drm.h>
 #include "backend/drm/drm.h"
+#include "backend/drm/fb.h"
 
 struct wlr_drm_backend *get_drm_backend_from_backend(
 		struct wlr_backend *wlr_backend) {
@@ -72,12 +73,7 @@ static void backend_destroy(struct wlr_backend *backend) {
 
 static int backend_get_drm_fd(struct wlr_backend *backend) {
 	struct wlr_drm_backend *drm = get_drm_backend_from_backend(backend);
-
-	if (drm->parent) {
-		return drm->parent->fd;
-	} else {
-		return drm->fd;
-	}
+	return drm->fd;
 }
 
 static uint32_t drm_backend_get_buffer_caps(struct wlr_backend *backend) {
@@ -93,6 +89,11 @@ static const struct wlr_backend_impl backend_impl = {
 
 bool wlr_backend_is_drm(struct wlr_backend *b) {
 	return b->impl == &backend_impl;
+}
+
+struct wlr_backend *wlr_drm_backend_get_parent(struct wlr_backend *backend) {
+	struct wlr_drm_backend *drm = get_drm_backend_from_backend(backend);
+	return drm->parent ? &drm->parent->backend : NULL;
 }
 
 static void handle_session_active(struct wl_listener *listener, void *data) {

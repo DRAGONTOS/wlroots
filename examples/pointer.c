@@ -13,7 +13,6 @@
 #include <wlr/render/wlr_renderer.h>
 #include <wlr/types/wlr_cursor.h>
 #include <wlr/types/wlr_keyboard.h>
-#include <wlr/types/wlr_matrix.h>
 #include <wlr/types/wlr_output_layout.h>
 #include <wlr/types/wlr_pointer.h>
 #include <wlr/types/wlr_tablet_tool.h>
@@ -351,7 +350,7 @@ int main(int argc, char *argv[]) {
 	state.allocator = wlr_allocator_autocreate(wlr, state.renderer);
 
 	state.cursor = wlr_cursor_create();
-	state.layout = wlr_output_layout_create();
+	state.layout = wlr_output_layout_create(display);
 	wlr_cursor_attach_output_layout(state.cursor, state.layout);
 	//wlr_cursor_map_to_region(state.cursor, state.config->cursor.mapped_box);
 	wl_list_init(&state.devices);
@@ -415,5 +414,4 @@ int main(int argc, char *argv[]) {
 
 	wlr_xcursor_manager_destroy(state.xcursor_manager);
 	wlr_cursor_destroy(state.cursor);
-	wlr_output_layout_destroy(state.layout);
 }

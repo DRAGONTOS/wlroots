@@ -6,7 +6,6 @@
 #include <wlr/interfaces/wlr_output.h>
 #include <wlr/render/swapchain.h>
 #include <wlr/types/wlr_compositor.h>
-#include <wlr/types/wlr_matrix.h>
 #include <wlr/types/wlr_output_layer.h>
 #include <wlr/util/log.h>
 #include "render/allocator/allocator.h"
@@ -128,15 +127,25 @@ static void output_bind(struct wl_client *wl_client, void *data,
 	wl_signal_emit_mutable(&output->events.bind, &evt);
 }
 
-void wlr_output_create_global(struct wlr_output *output) {
+static void handle_display_destroy(struct wl_listener *listener, void *data) {
+	struct wlr_output *output = wl_container_of(listener, output, display_destroy);
+	wlr_output_destroy_global(output);
+}
+
+void wlr_output_create_global(struct wlr_output *output, struct wl_display *display) {
 	if (output->global != NULL) {
 		return;
 	}
-	output->global = wl_global_create(output->display,
+
+	output->global = wl_global_create(display,
 		&wl_output_interface, OUTPUT_VERSION, output, output_bind);
 	if (output->global == NULL) {
 		wlr_log(WLR_ERROR, "Failed to allocate wl_output global");
+		return;
 	}
+
+	wl_list_remove(&output->display_destroy.link);
+	wl_display_add_destroy_listener(display, &output->display_destroy);
 }
 
 void wlr_output_destroy_global(struct wlr_output *output) {
@@ -151,6 +160,9 @@ void wlr_output_destroy_global(struct wlr_output *output) {
 		wl_list_remove(wl_resource_get_link(resource));
 		wl_list_init(wl_resource_get_link(resource));
 	}
+
+	wl_list_remove(&output->display_destroy.link);
+	wl_list_init(&output->display_destroy.link);
 
 	wlr_global_destroy_safe(output->global);
 	output->global = NULL;
@@ -171,29 +183,14 @@ void wlr_output_schedule_done(struct wlr_output *output) {
 		return; // Already scheduled
 	}
 
-	struct wl_event_loop *ev = wl_display_get_event_loop(output->display);
-	output->idle_done =
-		wl_event_loop_add_idle(ev, schedule_done_handle_idle_timer, output);
+	output->idle_done = wl_event_loop_add_idle(output->event_loop,
+		schedule_done_handle_idle_timer, output);
 }
 
 struct wlr_output *wlr_output_from_resource(struct wl_resource *resource) {
 	assert(wl_resource_instance_of(resource, &wl_output_interface,
 		&output_impl));
 	return wl_resource_get_user_data(resource);
-}
-
-static void output_update_matrix(struct wlr_output *output) {
-	wlr_matrix_identity(output->transform_matrix);
-	if (output->transform != WL_OUTPUT_TRANSFORM_NORMAL) {
-		int tr_width, tr_height;
-		wlr_output_transformed_resolution(output, &tr_width, &tr_height);
-
-		wlr_matrix_translate(output->transform_matrix,
-			output->width / 2.0, output->height / 2.0);
-		wlr_matrix_transform(output->transform_matrix, output->transform);
-		wlr_matrix_translate(output->transform_matrix,
-			- tr_width / 2.0, - tr_height / 2.0);
-	}
 }
 
 void wlr_output_enable(struct wlr_output *output, bool enable) {
@@ -271,12 +268,6 @@ void wlr_output_set_description(struct wlr_output *output, const char *desc) {
 	wl_signal_emit_mutable(&output->events.description, output);
 }
 
-static void handle_display_destroy(struct wl_listener *listener, void *data) {
-	struct wlr_output *output =
-		wl_container_of(listener, output, display_destroy);
-	wlr_output_destroy_global(output);
-}
-
 static void output_state_move(struct wlr_output_state *dst,
 		struct wlr_output_state *src) {
 	*dst = *src;
@@ -304,7 +295,6 @@ static void output_apply_state(struct wlr_output *output,
 
 	if (state->committed & WLR_OUTPUT_STATE_TRANSFORM) {
 		output->transform = state->transform;
-		output_update_matrix(output);
 	}
 
 	bool geometry_updated = state->committed &
@@ -364,7 +354,6 @@ static void output_apply_state(struct wlr_output *output,
 				output->refresh != refresh) {
 			output->width = width;
 			output->height = height;
-			output_update_matrix(output);
 
 			output->refresh = refresh;
 
@@ -397,7 +386,7 @@ static void output_apply_state(struct wlr_output *output,
 }
 
 void wlr_output_init(struct wlr_output *output, struct wlr_backend *backend,
-		const struct wlr_output_impl *impl, struct wl_display *display,
+		const struct wlr_output_impl *impl, struct wl_event_loop *event_loop,
 		const struct wlr_output_state *state) {
 	assert(impl->commit);
 	if (impl->set_cursor || impl->move_cursor) {
@@ -407,7 +396,7 @@ void wlr_output_init(struct wlr_output *output, struct wlr_backend *backend,
 	*output = (struct wlr_output){
 		.backend = backend,
 		.impl = impl,
-		.display = display,
+		.event_loop = event_loop,
 		.render_format = DRM_FORMAT_XRGB8888,
 		.transform = WL_OUTPUT_TRANSFORM_NORMAL,
 		.scale = 1,
@@ -437,8 +426,8 @@ void wlr_output_init(struct wlr_output *output, struct wlr_backend *backend,
 
 	wlr_addon_set_init(&output->addons);
 
+	wl_list_init(&output->display_destroy.link);
 	output->display_destroy.notify = handle_display_destroy;
-	wl_display_add_destroy_listener(display, &output->display_destroy);
 
 	if (state) {
 		output_apply_state(output, state);
@@ -450,11 +439,12 @@ void wlr_output_destroy(struct wlr_output *output) {
 		return;
 	}
 
-	wl_list_remove(&output->display_destroy.link);
-	wlr_output_destroy_global(output);
-	output_clear_back_buffer(output);
-
 	wl_signal_emit_mutable(&output->events.destroy, output);
+
+	wlr_output_destroy_global(output);
+
+	wl_list_remove(&output->display_destroy.link);
+
 	wlr_addon_set_finish(&output->addons);
 
 	// The backend is responsible for free-ing the list of modes
@@ -771,12 +761,6 @@ bool wlr_output_test_state(struct wlr_output *output,
 bool wlr_output_test(struct wlr_output *output) {
 	struct wlr_output_state state = output->pending;
 
-	if (output->back_buffer != NULL) {
-		assert((state.committed & WLR_OUTPUT_STATE_BUFFER) == 0);
-		state.committed |= WLR_OUTPUT_STATE_BUFFER;
-		state.buffer = output->back_buffer;
-	}
-
 	return wlr_output_test_state(output, &state);
 }
 
@@ -850,22 +834,12 @@ bool wlr_output_commit(struct wlr_output *output) {
 	struct wlr_output_state state = {0};
 	output_state_move(&state, &output->pending);
 
-	// output_clear_back_buffer detaches the buffer from the renderer. This is
-	// important to do before calling impl->commit(), because this marks an
-	// implicit rendering synchronization point. The backend needs it to avoid
-	// displaying a buffer when asynchronous GPU work isn't finished.
-	if (output->back_buffer != NULL) {
-		wlr_output_state_set_buffer(&state, output->back_buffer);
-		output_clear_back_buffer(output);
-	}
-
 	bool ok = wlr_output_commit_state(output, &state);
 	wlr_output_state_finish(&state);
 	return ok;
 }
 
 void wlr_output_rollback(struct wlr_output *output) {
-	output_clear_back_buffer(output);
 	output_state_clear(&output->pending);
 }
 
@@ -901,9 +875,8 @@ void wlr_output_schedule_frame(struct wlr_output *output) {
 
 	// We're using an idle timer here in case a buffer swap happens right after
 	// this function is called
-	struct wl_event_loop *ev = wl_display_get_event_loop(output->display);
-	output->idle_frame =
-		wl_event_loop_add_idle(ev, schedule_frame_handle_idle_timer, output);
+	output->idle_frame = wl_event_loop_add_idle(output->event_loop,
+		schedule_frame_handle_idle_timer, output);
 }
 
 void wlr_output_send_present(struct wlr_output *output,
@@ -960,8 +933,8 @@ void output_defer_present(struct wlr_output *output, struct wlr_output_event_pre
 	deferred->output_destroy.notify = deferred_present_event_handle_output_destroy;
 	wl_signal_add(&output->events.destroy, &deferred->output_destroy);
 
-	struct wl_event_loop *ev = wl_display_get_event_loop(output->display);
-	deferred->idle_source = wl_event_loop_add_idle(ev, deferred_present_event_handle_idle, deferred);
+	deferred->idle_source = wl_event_loop_add_idle(output->event_loop,
+		deferred_present_event_handle_idle, deferred);
 }
 
 void wlr_output_send_request_state(struct wlr_output *output,
