@@ -110,10 +110,6 @@ struct wlr_layer_surface_v1 {
 	} events;
 
 	void *data;
-
-	// private state
-
-	struct wlr_surface_synced synced;
 };
 
 struct wlr_layer_shell_v1 *wlr_layer_shell_v1_create(struct wl_display *display,

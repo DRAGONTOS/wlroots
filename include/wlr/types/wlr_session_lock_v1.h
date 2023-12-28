@@ -12,7 +12,6 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <wayland-server-core.h>
-#include <wlr/types/wlr_compositor.h>
 
 struct wlr_session_lock_manager_v1 {
 	struct wl_global *global;
@@ -80,8 +79,6 @@ struct wlr_session_lock_surface_v1 {
 	void *data;
 
 	// private state
-
-	struct wlr_surface_synced synced;
 
 	struct wl_listener output_destroy;
 };

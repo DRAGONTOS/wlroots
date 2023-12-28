@@ -448,26 +448,25 @@ static bool output_cursor_to_picture(struct wlr_x11_output *output,
 		return true;
 	}
 
-	struct wlr_texture *texture = wlr_texture_from_buffer(renderer, buffer);
-	if (!texture) {
-		return false;
-	}
-
 	int depth = 32;
-	int stride = texture->width * 4;
-	uint8_t *data = malloc(texture->height * stride);
+	int stride = buffer->width * 4;
+
+	uint8_t *data = malloc(buffer->height * stride);
 	if (data == NULL) {
-		wlr_texture_destroy(texture);
 		return false;
 	}
 
-	bool result = wlr_texture_read_pixels(texture, &(struct wlr_texture_read_pixels_options) {
-		.format = DRM_FORMAT_ARGB8888,
-		.stride = stride,
-		.data = data,
-	});
+	if (!wlr_renderer_begin_with_buffer(renderer, buffer)) {
+		free(data);
+		return false;
+	}
 
-	wlr_texture_destroy(texture);
+	bool result = wlr_renderer_read_pixels(
+		renderer, DRM_FORMAT_ARGB8888,
+		stride, buffer->width, buffer->height, 0, 0, 0, 0,
+		data);
+
+	wlr_renderer_end(renderer);
 
 	if (!result) {
 		free(data);

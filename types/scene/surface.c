@@ -48,10 +48,17 @@ static void handle_scene_buffer_output_sample(
 		return;
 	}
 
+	struct wlr_scene *root = scene_node_get_root(&surface->buffer->node);
+	if (!root->presentation) {
+		return;
+	}
+
 	if (event->direct_scanout) {
-		wlr_presentation_surface_scanned_out_on_output(surface->surface, scene_output->output);
+		wlr_presentation_surface_scanned_out_on_output(
+			root->presentation, surface->surface, scene_output->output);
 	} else {
-		wlr_presentation_surface_textured_on_output(surface->surface, scene_output->output);
+		wlr_presentation_surface_textured_on_output(
+			root->presentation, surface->surface, scene_output->output);
 	}
 }
 

@@ -99,10 +99,12 @@ struct wlr_scene {
 	struct wl_list outputs; // wlr_scene_output.link
 
 	// May be NULL
+	struct wlr_presentation *presentation;
 	struct wlr_linux_dmabuf_v1 *linux_dmabuf_v1;
 
 	// private state
 
+	struct wl_listener presentation_destroy;
 	struct wl_listener linux_dmabuf_v1_destroy;
 
 	enum wlr_scene_debug_damage_option debug_damage_option;
@@ -204,8 +206,6 @@ struct wlr_scene_output {
 
 	// private state
 
-	pixman_region32_t pending_commit_damage;
-
 	uint8_t index;
 	bool prev_scanout;
 
@@ -300,6 +300,15 @@ struct wlr_scene_node *wlr_scene_node_at(struct wlr_scene_node *node,
  * Create a new scene-graph.
  */
 struct wlr_scene *wlr_scene_create(void);
+
+/**
+ * Handle presentation feedback for all surfaces in the scene, assuming that
+ * scene outputs and the scene rendering functions are used.
+ *
+ * Asserts that a struct wlr_presentation hasn't already been set for the scene.
+ */
+void wlr_scene_set_presentation(struct wlr_scene *scene,
+	struct wlr_presentation *presentation);
 
 /**
  * Handles linux_dmabuf_v1 feedback for all surfaces in the scene.

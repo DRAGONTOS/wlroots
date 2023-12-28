@@ -249,28 +249,8 @@ static void vulkan_texture_unref(struct wlr_texture *wlr_texture) {
 	}
 }
 
-static bool vulkan_texture_read_pixels(struct wlr_texture *wlr_texture,
-		const struct wlr_texture_read_pixels_options *options) {
-	struct wlr_vk_texture *texture = vulkan_get_texture(wlr_texture);
-
-	struct wlr_box src;
-	wlr_texture_read_pixels_options_get_src_box(options, wlr_texture, &src);
-
-	void *p = wlr_texture_read_pixel_options_get_data(options);
-
-	return vulkan_read_pixels(texture->renderer, texture->format->vk, texture->image,
-		options->format, options->stride, src.width, src.height, src.x, src.y, 0, 0, p);
-}
-
-static uint32_t vulkan_texture_preferred_read_format(struct wlr_texture *wlr_texture) {
-	struct wlr_vk_texture *texture = vulkan_get_texture(wlr_texture);
-	return texture->format->drm;
-}
-
 static const struct wlr_texture_impl texture_impl = {
 	.update_from_buffer = vulkan_texture_update_from_buffer,
-	.read_pixels = vulkan_texture_read_pixels,
-	.preferred_read_format = vulkan_texture_preferred_read_format,
 	.destroy = vulkan_texture_unref,
 };
 
@@ -311,8 +291,7 @@ struct wlr_vk_texture_view *vulkan_texture_get_or_create_view(struct wlr_vk_text
 	VkImageViewCreateInfo view_info = {
 		.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
 		.viewType = VK_IMAGE_VIEW_TYPE_2D,
-		.format = texture->using_mutable_srgb ? texture->format->vk_srgb
-			: texture->format->vk,
+		.format = texture->format->vk,
 		.components.r = VK_COMPONENT_SWIZZLE_IDENTITY,
 		.components.g = VK_COMPONENT_SWIZZLE_IDENTITY,
 		.components.b = VK_COMPONENT_SWIZZLE_IDENTITY,
@@ -373,10 +352,9 @@ struct wlr_vk_texture_view *vulkan_texture_get_or_create_view(struct wlr_vk_text
 }
 
 static void texture_set_format(struct wlr_vk_texture *texture,
-		const struct wlr_vk_format *format, bool has_mutable_srgb) {
+		const struct wlr_vk_format *format) {
 	texture->format = format;
-	texture->using_mutable_srgb = has_mutable_srgb;
-	texture->transform = !format->is_ycbcr && has_mutable_srgb ?
+	texture->transform = !format->is_ycbcr && format->is_srgb ?
 		WLR_VK_TEXTURE_TRANSFORM_IDENTITY : WLR_VK_TEXTURE_TRANSFORM_SRGB;
 
 	const struct wlr_pixel_format_info *format_info =
@@ -410,17 +388,8 @@ static struct wlr_texture *vulkan_texture_from_pixels(
 		return NULL;
 	}
 
-	texture_set_format(texture, &fmt->format, fmt->shm.has_mutable_srgb);
+	texture_set_format(texture, &fmt->format);
 
-	VkFormat view_formats[2] = {
-		fmt->format.vk,
-		fmt->format.vk_srgb,
-	};
-	VkImageFormatListCreateInfoKHR list_info = {
-		.sType = VK_STRUCTURE_TYPE_IMAGE_FORMAT_LIST_CREATE_INFO_KHR,
-		.pViewFormats = view_formats,
-		.viewFormatCount = 2,
-	};
 	VkImageCreateInfo img_info = {
 		.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
 		.imageType = VK_IMAGE_TYPE_2D,
@@ -433,11 +402,7 @@ static struct wlr_texture *vulkan_texture_from_pixels(
 		.extent = (VkExtent3D) { width, height, 1 },
 		.tiling = VK_IMAGE_TILING_OPTIMAL,
 		.usage = vulkan_shm_tex_usage,
-		.pNext = fmt->shm.has_mutable_srgb ? &list_info : NULL,
 	};
-	if (fmt->shm.has_mutable_srgb) {
-		img_info.flags |= VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT;
-	}
 
 	res = vkCreateImage(dev, &img_info, NULL, &texture->image);
 	if (res != VK_SUCCESS) {
@@ -517,7 +482,7 @@ static bool is_dmabuf_disjoint(const struct wlr_dmabuf_attributes *attribs) {
 VkImage vulkan_import_dmabuf(struct wlr_vk_renderer *renderer,
 		const struct wlr_dmabuf_attributes *attribs,
 		VkDeviceMemory mems[static WLR_DMABUF_MAX_PLANES], uint32_t *n_mems,
-		bool for_render, bool *using_mutable_srgb) {
+		bool for_render) {
 	VkResult res;
 	VkDevice dev = renderer->dev->dev;
 	*n_mems = 0u;
@@ -585,9 +550,6 @@ VkImage vulkan_import_dmabuf(struct wlr_vk_renderer *renderer,
 	if (disjoint) {
 		img_info.flags = VK_IMAGE_CREATE_DISJOINT_BIT;
 	}
-	if (mod->has_mutable_srgb) {
-		img_info.flags |= VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT;
-	}
 
 	VkExternalMemoryImageCreateInfo eimg = {
 		.sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO,
@@ -611,19 +573,6 @@ VkImage vulkan_import_dmabuf(struct wlr_vk_renderer *renderer,
 		.pPlaneLayouts = plane_layouts,
 	};
 	eimg.pNext = &mod_info;
-
-	VkFormat view_formats[2] = {
-		fmt->format.vk,
-		fmt->format.vk_srgb,
-	};
-	VkImageFormatListCreateInfoKHR list_info = {
-		.sType = VK_STRUCTURE_TYPE_IMAGE_FORMAT_LIST_CREATE_INFO_KHR,
-		.pViewFormats = view_formats,
-		.viewFormatCount = 2,
-	};
-	if (mod->has_mutable_srgb) {
-		mod_info.pNext = &list_info;
-	}
 
 	VkImage image;
 	res = vkCreateImage(dev, &img_info, NULL, &image);
@@ -730,7 +679,6 @@ VkImage vulkan_import_dmabuf(struct wlr_vk_renderer *renderer,
 		goto error_image;
 	}
 
-	*using_mutable_srgb = mod->has_mutable_srgb;
 	return image;
 
 error_image:
@@ -762,13 +710,13 @@ static struct wlr_vk_texture *vulkan_texture_from_dmabuf(
 		return NULL;
 	}
 
-	bool using_mutable_srgb = false;
+	texture_set_format(texture, &fmt->format);
+
 	texture->image = vulkan_import_dmabuf(renderer, attribs,
-		texture->memories, &texture->mem_count, false, &using_mutable_srgb);
+		texture->memories, &texture->mem_count, false);
 	if (!texture->image) {
 		goto error;
 	}
-	texture_set_format(texture, &fmt->format, using_mutable_srgb);
 
 	texture->dmabuf_imported = true;
 

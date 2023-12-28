@@ -62,7 +62,7 @@ static void toplevel_decoration_handle_resource_destroy(
 	struct wlr_xdg_toplevel_decoration_v1 *decoration =
 		toplevel_decoration_from_resource(resource);
 	wl_signal_emit_mutable(&decoration->events.destroy, decoration);
-	wlr_surface_synced_finish(&decoration->synced);
+	wl_list_remove(&decoration->surface_commit.link);
 	wl_list_remove(&decoration->toplevel_destroy.link);
 	wl_list_remove(&decoration->surface_configure.link);
 	wl_list_remove(&decoration->surface_ack_configure.link);
@@ -141,9 +141,13 @@ static void toplevel_decoration_handle_surface_ack_configure(
 	free(configure);
 }
 
-static const struct wlr_surface_synced_impl surface_synced_impl = {
-	.state_size = sizeof(struct wlr_xdg_toplevel_decoration_v1_state),
-};
+static void toplevel_decoration_handle_surface_commit(
+		struct wl_listener *listener, void *data) {
+	struct wlr_xdg_toplevel_decoration_v1 *decoration =
+		wl_container_of(listener, decoration, surface_commit);
+
+	decoration->current = decoration->pending;
+}
 
 static const struct zxdg_decoration_manager_v1_interface decoration_manager_impl;
 
@@ -193,18 +197,10 @@ static void decoration_manager_handle_get_toplevel_decoration(
 	decoration->manager = manager;
 	decoration->toplevel = toplevel;
 
-	if (!wlr_surface_synced_init(&decoration->synced, toplevel->base->surface,
-			&surface_synced_impl, &decoration->pending, &decoration->current)) {
-		free(decoration);
-		wl_client_post_no_memory(client);
-		return;
-	}
-
 	uint32_t version = wl_resource_get_version(manager_resource);
 	decoration->resource = wl_resource_create(client,
 		&zxdg_toplevel_decoration_v1_interface, version, id);
 	if (decoration->resource == NULL) {
-		wlr_surface_synced_finish(&decoration->synced);
 		free(decoration);
 		wl_client_post_no_memory(client);
 		return;
@@ -226,6 +222,8 @@ static void decoration_manager_handle_get_toplevel_decoration(
 	decoration->surface_configure.notify = toplevel_decoration_handle_surface_configure;
 	wl_signal_add(&toplevel->base->events.ack_configure, &decoration->surface_ack_configure);
 	decoration->surface_ack_configure.notify = toplevel_decoration_handle_surface_ack_configure;
+	wl_signal_add(&toplevel->base->surface->events.commit, &decoration->surface_commit);
+	decoration->surface_commit.notify = toplevel_decoration_handle_surface_commit;
 
 	wl_list_insert(&manager->decorations, &decoration->link);
 
