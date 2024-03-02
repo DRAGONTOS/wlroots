@@ -1,0 +1,6 @@
+# This is a generated file and its contents are an internal implementation detail.
+# The update step will be re-executed if anything in this file changes.
+# No other meaning or use of this file is supported.
+
+command=sed;-E;-i;-e;s/(soversion = .*$)/soversion = 13032/g;meson.build
+work_dir=/home/rander/dev/hyprland/subprojects/wlroots
