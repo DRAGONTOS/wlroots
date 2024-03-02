@@ -1,5 +1,5 @@
-#if !defined(__FreeBSD__)
-#define _POSIX_C_SOURCE 200809L
+#if defined(__FreeBSD__)
+#undef _POSIX_C_SOURCE
 #endif
 #include <assert.h>
 #include <fcntl.h>
@@ -455,8 +455,8 @@ struct wlr_vk_device *vulkan_device_create(struct wlr_vk_instance *ini,
 	dev->drm_fd = -1;
 
 	// For dmabuf import we require at least the external_memory_fd,
-	// external_memory_dma_buf, queue_family_foreign and
-	// image_drm_format_modifier extensions.
+	// external_memory_dma_buf, queue_family_foreign,
+	// image_drm_format_modifier, and image_format_list extensions.
 	// The size is set to a large number to allow for other conditional
 	// extensions before the device is created
 	const char *extensions[32] = {0};

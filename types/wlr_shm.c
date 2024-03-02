@@ -1,3 +1,4 @@
+#undef _POSIX_C_SOURCE
 #define _DEFAULT_SOURCE // for MAP_ANONYMOUS
 #include <assert.h>
 #include <drm_fourcc.h>

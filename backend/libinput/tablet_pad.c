@@ -1,4 +1,3 @@
-#define _POSIX_C_SOURCE 200809L
 #include <assert.h>
 #include <string.h>
 #include <libinput.h>
@@ -33,7 +32,7 @@ static void add_pad_group_from_libinput(struct wlr_tablet_pad *pad,
 			++group->ring_count;
 		}
 	}
-	group->rings = calloc(sizeof(unsigned int), group->ring_count);
+	group->rings = calloc(group->ring_count, sizeof(unsigned int));
 	if (group->rings == NULL) {
 		goto group_fail;
 	}
@@ -50,7 +49,7 @@ static void add_pad_group_from_libinput(struct wlr_tablet_pad *pad,
 			++group->strip_count;
 		}
 	}
-	group->strips = calloc(sizeof(unsigned int), group->strip_count);
+	group->strips = calloc(group->strip_count, sizeof(unsigned int));
 	if (group->strips == NULL) {
 		goto group_fail;
 	}
@@ -66,7 +65,7 @@ static void add_pad_group_from_libinput(struct wlr_tablet_pad *pad,
 			++group->button_count;
 		}
 	}
-	group->buttons = calloc(sizeof(unsigned int), group->button_count);
+	group->buttons = calloc(group->button_count, sizeof(unsigned int));
 	if (group->buttons == NULL) {
 		goto group_fail;
 	}

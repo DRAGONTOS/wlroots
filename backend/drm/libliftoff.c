@@ -1,4 +1,3 @@
-#define _POSIX_C_SOURCE 200809L
 #include <fcntl.h>
 #include <libliftoff.h>
 #include <sys/stat.h>
@@ -317,7 +316,7 @@ static bool crtc_commit(struct wlr_drm_connector *conn,
 
 	uint32_t mode_id = crtc->mode_id;
 	if (modeset) {
-		if (!create_mode_blob(drm, conn, state, &mode_id)) {
+		if (!create_mode_blob(conn, state, &mode_id)) {
 			return false;
 		}
 	}
@@ -476,6 +475,10 @@ out:
 	drmModeAtomicFree(req);
 
 	if (ok && !test_only) {
+		if (!crtc->own_mode_id) {
+			crtc->mode_id = 0; // don't try to delete previous master's blobs
+		}
+		crtc->own_mode_id = true;
 		commit_blob(drm, &crtc->mode_id, mode_id);
 		commit_blob(drm, &crtc->gamma_lut, gamma_lut);
 
@@ -497,6 +500,7 @@ out:
 			wlr_log_errno(WLR_ERROR, "Failed to destroy FB_DAMAGE_CLIPS property blob");
 		}
 	}
+	wl_array_release(&fb_damage_clips_arr);
 
 	return ok;
 }
@@ -505,4 +509,5 @@ const struct wlr_drm_interface liftoff_iface = {
 	.init = init,
 	.finish = finish,
 	.crtc_commit = crtc_commit,
+	.reset = drm_atomic_reset,
 };

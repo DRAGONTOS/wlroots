@@ -1,4 +1,3 @@
-#define _POSIX_C_SOURCE 199309L
 #include <assert.h>
 #include <drm_fourcc.h>
 #include <GLES2/gl2.h>
@@ -39,14 +38,6 @@ struct wlr_gles2_renderer *gles2_get_renderer(
 		struct wlr_renderer *wlr_renderer) {
 	assert(wlr_renderer_is_gles2(wlr_renderer));
 	struct wlr_gles2_renderer *renderer = wl_container_of(wlr_renderer, renderer, wlr_renderer);
-	return renderer;
-}
-
-static struct wlr_gles2_renderer *gles2_get_renderer_in_context(
-		struct wlr_renderer *wlr_renderer) {
-	struct wlr_gles2_renderer *renderer = gles2_get_renderer(wlr_renderer);
-	assert(wlr_egl_is_current(renderer->egl));
-	assert(renderer->current_buffer != NULL);
 	return renderer;
 }
 
@@ -175,101 +166,6 @@ error_buffer:
 	return NULL;
 }
 
-static bool gles2_bind_buffer(struct wlr_renderer *wlr_renderer,
-		struct wlr_buffer *wlr_buffer) {
-	struct wlr_gles2_renderer *renderer = gles2_get_renderer(wlr_renderer);
-
-	if (renderer->current_buffer != NULL) {
-		assert(wlr_egl_is_current(renderer->egl));
-
-		push_gles2_debug(renderer);
-		glFlush();
-		glBindFramebuffer(GL_FRAMEBUFFER, 0);
-		pop_gles2_debug(renderer);
-
-		wlr_buffer_unlock(renderer->current_buffer->buffer);
-		renderer->current_buffer = NULL;
-	}
-
-	if (wlr_buffer == NULL) {
-		wlr_egl_unset_current(renderer->egl);
-		return true;
-	}
-
-	wlr_egl_make_current(renderer->egl);
-
-	GLint fbo = gles2_buffer_get_fbo(renderer->current_buffer);
-	if (!fbo) {
-		return false;
-	}
-
-	struct wlr_gles2_buffer *buffer = gles2_buffer_get_or_create(renderer, wlr_buffer);
-	if (buffer == NULL) {
-		return false;
-	}
-
-	wlr_buffer_lock(wlr_buffer);
-	renderer->current_buffer = buffer;
-
-	push_gles2_debug(renderer);
-	glBindFramebuffer(GL_FRAMEBUFFER, fbo);
-	pop_gles2_debug(renderer);
-
-	return true;
-}
-
-static const char *reset_status_str(GLenum status) {
-	switch (status) {
-	case GL_GUILTY_CONTEXT_RESET_KHR:
-		return "guilty";
-	case GL_INNOCENT_CONTEXT_RESET_KHR:
-		return "innocent";
-	case GL_UNKNOWN_CONTEXT_RESET_KHR:
-		return "unknown";
-	default:
-		return "<invalid>";
-	}
-}
-
-static bool gles2_begin(struct wlr_renderer *wlr_renderer, uint32_t width,
-		uint32_t height) {
-	struct wlr_gles2_renderer *renderer =
-		gles2_get_renderer_in_context(wlr_renderer);
-
-	push_gles2_debug(renderer);
-
-	if (renderer->procs.glGetGraphicsResetStatusKHR) {
-		GLenum status = renderer->procs.glGetGraphicsResetStatusKHR();
-		if (status != GL_NO_ERROR) {
-			wlr_log(WLR_ERROR, "GPU reset (%s)", reset_status_str(status));
-			wl_signal_emit_mutable(&wlr_renderer->events.lost, NULL);
-			return false;
-		}
-	}
-
-	glViewport(0, 0, width, height);
-	renderer->viewport_width = width;
-	renderer->viewport_height = height;
-
-	// refresh projection matrix
-	matrix_projection(renderer->projection, width, height,
-		WL_OUTPUT_TRANSFORM_FLIPPED_180);
-
-	glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
-
-	// XXX: maybe we should save output projection and remove some of the need
-	// for users to sling matricies themselves
-
-	pop_gles2_debug(renderer);
-
-	return true;
-}
-
-static void gles2_end(struct wlr_renderer *wlr_renderer) {
-	gles2_get_renderer_in_context(wlr_renderer);
-	// no-op
-}
-
 static const uint32_t *gles2_get_shm_texture_formats(
 		struct wlr_renderer *wlr_renderer, size_t *len) {
 	struct wlr_gles2_renderer *renderer = gles2_get_renderer(wlr_renderer);
@@ -286,90 +182,6 @@ static const struct wlr_drm_format_set *gles2_get_render_formats(
 		struct wlr_renderer *wlr_renderer) {
 	struct wlr_gles2_renderer *renderer = gles2_get_renderer(wlr_renderer);
 	return wlr_egl_get_dmabuf_render_formats(renderer->egl);
-}
-
-static uint32_t gles2_preferred_read_format(
-		struct wlr_renderer *wlr_renderer) {
-	struct wlr_gles2_renderer *renderer =
-		gles2_get_renderer_in_context(wlr_renderer);
-
-	push_gles2_debug(renderer);
-
-	GLint gl_format = -1, gl_type = -1, alpha_size = -1;
-	glGetIntegerv(GL_IMPLEMENTATION_COLOR_READ_FORMAT, &gl_format);
-	glGetIntegerv(GL_IMPLEMENTATION_COLOR_READ_TYPE, &gl_type);
-	glGetIntegerv(GL_ALPHA_BITS, &alpha_size);
-
-	pop_gles2_debug(renderer);
-
-	const struct wlr_gles2_pixel_format *fmt =
-		get_gles2_format_from_gl(gl_format, gl_type, alpha_size > 0);
-	if (fmt != NULL) {
-		return fmt->drm_format;
-	}
-
-	if (renderer->exts.EXT_read_format_bgra) {
-		return DRM_FORMAT_XRGB8888;
-	}
-	return DRM_FORMAT_XBGR8888;
-}
-
-static bool gles2_read_pixels(struct wlr_renderer *wlr_renderer,
-		uint32_t drm_format, uint32_t stride,
-		uint32_t width, uint32_t height, uint32_t src_x, uint32_t src_y,
-		uint32_t dst_x, uint32_t dst_y, void *data) {
-	struct wlr_gles2_renderer *renderer =
-		gles2_get_renderer_in_context(wlr_renderer);
-
-	const struct wlr_gles2_pixel_format *fmt =
-		get_gles2_format_from_drm(drm_format);
-	if (fmt == NULL || !is_gles2_pixel_format_supported(renderer, fmt)) {
-		wlr_log(WLR_ERROR, "Cannot read pixels: unsupported pixel format 0x%"PRIX32, drm_format);
-		return false;
-	}
-
-	if (fmt->gl_format == GL_BGRA_EXT && !renderer->exts.EXT_read_format_bgra) {
-		wlr_log(WLR_ERROR,
-			"Cannot read pixels: missing GL_EXT_read_format_bgra extension");
-		return false;
-	}
-
-	const struct wlr_pixel_format_info *drm_fmt =
-		drm_get_pixel_format_info(fmt->drm_format);
-	assert(drm_fmt);
-	if (pixel_format_info_pixels_per_block(drm_fmt) != 1) {
-		wlr_log(WLR_ERROR, "Cannot read pixels: block formats are not supported");
-		return false;
-	}
-
-	push_gles2_debug(renderer);
-
-	// Make sure any pending drawing is finished before we try to read it
-	glFinish();
-
-	glGetError(); // Clear the error flag
-
-	unsigned char *p = (unsigned char *)data + dst_y * stride;
-	glPixelStorei(GL_PACK_ALIGNMENT, 1);
-	uint32_t pack_stride = pixel_format_info_min_stride(drm_fmt, width);
-	if (pack_stride == stride && dst_x == 0) {
-		// Under these particular conditions, we can read the pixels with only
-		// one glReadPixels call
-
-		glReadPixels(src_x, src_y, width, height, fmt->gl_format, fmt->gl_type, p);
-	} else {
-		// Unfortunately GLES2 doesn't support GL_PACK_ROW_LENGTH, so we have to read
-		// the lines out row by row
-		for (size_t i = 0; i < height; ++i) {
-			uint32_t y = src_y + i;
-			glReadPixels(src_x, y, width, 1, fmt->gl_format,
-				fmt->gl_type, p + i * stride + dst_x * drm_fmt->bytes_per_block);
-		}
-	}
-
-	pop_gles2_debug(renderer);
-
-	return glGetError() == GL_NO_ERROR;
 }
 
 static int gles2_get_drm_fd(struct wlr_renderer *wlr_renderer) {
@@ -458,6 +270,26 @@ static struct wlr_render_pass *gles2_begin_buffer_pass(struct wlr_renderer *wlr_
 	return &pass->base;
 }
 
+GLuint wlr_gles2_renderer_get_buffer_fbo(struct wlr_renderer *wlr_renderer,
+		struct wlr_buffer *wlr_buffer) {
+	struct wlr_gles2_renderer *renderer = gles2_get_renderer(wlr_renderer);
+	GLuint fbo = 0;
+
+	struct wlr_egl_context prev_ctx = {0};
+	wlr_egl_save_context(&prev_ctx);
+	if (!wlr_egl_make_current(renderer->egl)) {
+		return 0;
+	}
+
+	struct wlr_gles2_buffer *buffer = gles2_buffer_get_or_create(renderer, wlr_buffer);
+	if (buffer) {
+		fbo = gles2_buffer_get_fbo(buffer);
+	}
+
+	wlr_egl_restore_context(&prev_ctx);
+	return fbo;
+}
+
 static struct wlr_render_timer *gles2_render_timer_create(struct wlr_renderer *wlr_renderer) {
 	struct wlr_gles2_renderer *renderer = gles2_get_renderer(wlr_renderer);
 	if (!renderer->exts.EXT_disjoint_timer_query) {
@@ -530,14 +362,9 @@ static void gles2_render_timer_destroy(struct wlr_render_timer *wlr_timer) {
 
 static const struct wlr_renderer_impl renderer_impl = {
 	.destroy = gles2_destroy,
-	.bind_buffer = gles2_bind_buffer,
-	.begin = gles2_begin,
-	.end = gles2_end,
 	.get_shm_texture_formats = gles2_get_shm_texture_formats,
 	.get_dmabuf_texture_formats = gles2_get_dmabuf_texture_formats,
 	.get_render_formats = gles2_get_render_formats,
-	.preferred_read_format = gles2_preferred_read_format,
-	.read_pixels = gles2_read_pixels,
 	.get_drm_fd = gles2_get_drm_fd,
 	.get_render_buffer_caps = gles2_get_render_buffer_caps,
 	.texture_from_buffer = gles2_texture_from_buffer,
@@ -884,10 +711,4 @@ bool wlr_gles2_renderer_check_ext(struct wlr_renderer *wlr_renderer,
 		const char *ext) {
 	struct wlr_gles2_renderer *renderer = gles2_get_renderer(wlr_renderer);
 	return check_gl_ext(renderer->exts_str, ext);
-}
-
-GLuint wlr_gles2_renderer_get_current_fbo(struct wlr_renderer *wlr_renderer) {
-	struct wlr_gles2_renderer *renderer = gles2_get_renderer(wlr_renderer);
-	assert(renderer->current_buffer);
-	return gles2_buffer_get_fbo(renderer->current_buffer);
 }

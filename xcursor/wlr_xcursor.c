@@ -23,7 +23,6 @@
  * SOFTWARE.
  */
 
-#define _POSIX_C_SOURCE 200809L
 #include <inttypes.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -170,10 +169,13 @@ static struct wlr_xcursor *xcursor_create_from_xcursor_images(
 	return cursor;
 }
 
+static struct wlr_xcursor *xcursor_theme_get_cursor(struct wlr_xcursor_theme *theme,
+	const char *name);
+
 static void load_callback(struct xcursor_images *images, void *data) {
 	struct wlr_xcursor_theme *theme = data;
 
-	if (wlr_xcursor_theme_get_cursor(theme, images->name)) {
+	if (xcursor_theme_get_cursor(theme, images->name)) {
 		xcursor_images_destroy(images);
 		return;
 	}

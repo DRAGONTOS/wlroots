@@ -11,16 +11,17 @@ project(
 	],
 )
 
-# When doing a major or minor release, *always* increase soversion. This isn't
-# necessary for bugfix releases. Increasing soversion is required because
-# wlroots never guarantees ABI stability -- only API stability is guaranteed
-# between minor releases.
-soversion = 13
+version = meson.project_version().split('-')[0]
+version_major = version.split('.')[0]
+version_minor = version.split('.')[1]
+assert(version_major == '0')
+soversion = version_minor.to_int() - 5
 
 little_endian = target_machine.endian() == 'little'
 big_endian = target_machine.endian() == 'big'
 
 add_project_arguments([
+	'-D_POSIX_C_SOURCE=200809L',
 	'-DWLR_USE_UNSTABLE',
 	'-DWLR_LITTLE_ENDIAN=@0@'.format(little_endian.to_int()),
 	'-DWLR_BIG_ENDIAN=@0@'.format(big_endian.to_int()),
@@ -109,7 +110,7 @@ wayland_server = dependency('wayland-server',
 )
 
 drm = dependency('libdrm',
-	version: '>=2.4.118',
+	version: '>=2.4.120',
 	fallback: 'libdrm',
 	default_options: [
 		'intel=disabled',

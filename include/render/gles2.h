@@ -41,7 +41,6 @@ struct wlr_gles2_tex_shader {
 struct wlr_gles2_renderer {
 	struct wlr_renderer wlr_renderer;
 
-	float projection[9];
 	struct wlr_egl *egl;
 	int drm_fd;
 
@@ -87,9 +86,6 @@ struct wlr_gles2_renderer {
 
 	struct wl_list buffers; // wlr_gles2_buffer.link
 	struct wl_list textures; // wlr_gles2_texture.link
-
-	struct wlr_gles2_buffer *current_buffer;
-	uint32_t viewport_width, viewport_height;
 };
 
 struct wlr_gles2_render_timer {
@@ -121,8 +117,12 @@ struct wlr_gles2_texture {
 	struct wl_list link; // wlr_gles2_renderer.textures
 
 	GLenum target;
-	bool owns_tex;
+
+	// If this texture is imported from a buffer, the texture is does not own
+	// these states. These cannot be destroyed along with the texture in this
+	// case.
 	GLuint tex;
+	GLuint fbo;
 
 	bool has_alpha;
 

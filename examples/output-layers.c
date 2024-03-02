@@ -1,4 +1,3 @@
-#define _POSIX_C_SOURCE 200112L
 #include <getopt.h>
 #include <stdbool.h>
 #include <stdio.h>
@@ -286,7 +285,7 @@ int main(int argc, char *argv[]) {
 
 	struct server server = {0};
 	server.wl_display = wl_display_create();
-	server.backend = wlr_backend_autocreate(server.wl_display, NULL);
+	server.backend = wlr_backend_autocreate(wl_display_get_event_loop(server.wl_display), NULL);
 
 	server.renderer = wlr_renderer_autocreate(server.backend);
 	wlr_renderer_init_wl_shm(server.renderer, server.wl_display);

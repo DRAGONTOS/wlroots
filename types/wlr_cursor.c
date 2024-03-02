@@ -1,4 +1,3 @@
-#define _POSIX_C_SOURCE 200809L
 #include <assert.h>
 #include <drm_fourcc.h>
 #include <limits.h>
@@ -6,6 +5,7 @@
 #include <stdlib.h>
 #include <wayland-server-core.h>
 #include <wlr/types/wlr_cursor.h>
+#include <wlr/types/wlr_fractional_scale_v1.h>
 #include <wlr/types/wlr_input_device.h>
 #include <wlr/types/wlr_output_layout.h>
 #include <wlr/types/wlr_output.h>
@@ -264,6 +264,16 @@ static struct wlr_cursor_device *get_cursor_device(struct wlr_cursor *cur,
 	return ret;
 }
 
+static void output_cursor_move(struct wlr_cursor_output_cursor *output_cursor) {
+	struct wlr_cursor *cur = output_cursor->cursor;
+
+	double output_x = cur->x, output_y = cur->y;
+	wlr_output_layout_output_coords(cur->state->layout,
+		output_cursor->output_cursor->output, &output_x, &output_y);
+	wlr_output_cursor_move(output_cursor->output_cursor,
+		output_x, output_y);
+}
+
 static void cursor_warp_unchecked(struct wlr_cursor *cur,
 		double lx, double ly) {
 	assert(cur->state->layout);
@@ -272,17 +282,13 @@ static void cursor_warp_unchecked(struct wlr_cursor *cur,
 		return;
 	}
 
-	struct wlr_cursor_output_cursor *output_cursor;
-	wl_list_for_each(output_cursor, &cur->state->output_cursors, link) {
-		double output_x = lx, output_y = ly;
-		wlr_output_layout_output_coords(cur->state->layout,
-			output_cursor->output_cursor->output, &output_x, &output_y);
-		wlr_output_cursor_move(output_cursor->output_cursor,
-			output_x, output_y);
-	}
-
 	cur->x = lx;
 	cur->y = ly;
+
+	struct wlr_cursor_output_cursor *output_cursor;
+	wl_list_for_each(output_cursor, &cur->state->output_cursors, link) {
+		output_cursor_move(output_cursor);
+	}
 }
 
 /**
@@ -544,6 +550,16 @@ static void cursor_output_cursor_update(struct wlr_cursor_output_cursor *output_
 		} else {
 			wlr_surface_send_leave(surface, output);
 		}
+
+		float scale = 1;
+		struct wlr_surface_output *surface_output;
+		wl_list_for_each(surface_output, &surface->current_outputs, link) {
+			if (surface_output->output->scale > scale) {
+				scale = surface_output->output->scale;
+			}
+		}
+		wlr_fractional_scale_v1_notify_scale(surface, scale);
+		wlr_surface_set_preferred_buffer_scale(surface, ceil(scale));
 	} else if (cur->state->xcursor_name != NULL) {
 		struct wlr_xcursor_manager *manager = cur->state->xcursor_manager;
 		const char *name = cur->state->xcursor_name;
@@ -1056,7 +1072,6 @@ static void handle_layout_output_destroy(struct wl_listener *listener,
 		void *data) {
 	struct wlr_cursor_output_cursor *output_cursor =
 		wl_container_of(listener, output_cursor, layout_output_destroy);
-	//struct wlr_output_layout_output *l_output = data;
 	output_cursor_destroy(output_cursor);
 }
 
@@ -1093,6 +1108,7 @@ static void layout_add(struct wlr_cursor_state *state,
 		&output_cursor->output_commit);
 	output_cursor->output_commit.notify = output_cursor_output_handle_output_commit;
 
+	output_cursor_move(output_cursor);
 	cursor_output_cursor_update(output_cursor);
 }
 
@@ -1162,21 +1178,11 @@ void wlr_cursor_map_input_to_output(struct wlr_cursor *cur,
 
 void wlr_cursor_map_to_region(struct wlr_cursor *cur,
 		const struct wlr_box *box) {
-	cur->state->mapped_box = (struct wlr_box){0};
-
-	if (box) {
-		if (wlr_box_empty(box)) {
-			wlr_log(WLR_ERROR, "cannot map cursor to an empty region");
-			return;
-		}
-		cur->state->mapped_box = *box;
-	}
+	cur->state->mapped_box = wlr_box_empty(box) ? (struct wlr_box){0} : *box;
 }
 
 void wlr_cursor_map_input_to_region(struct wlr_cursor *cur,
 		struct wlr_input_device *dev, const struct wlr_box *box) {
-	cur->state->mapped_box = (struct wlr_box){0};
-
 	struct wlr_cursor_device *c_device = get_cursor_device(cur, dev);
 	if (!c_device) {
 		wlr_log(WLR_ERROR, "Cannot map device \"%s\" to geometry (not found in"
@@ -1184,13 +1190,5 @@ void wlr_cursor_map_input_to_region(struct wlr_cursor *cur,
 		return;
 	}
 
-	if (box) {
-		if (wlr_box_empty(box)) {
-			wlr_log(WLR_ERROR,
-				"cannot map device \"%s\" input to an empty region",
-				dev->name);
-			return;
-		}
-		c_device->mapped_box = *box;
-	}
+	c_device->mapped_box = wlr_box_empty(box) ? (struct wlr_box){0} : *box;
 }

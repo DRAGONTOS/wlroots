@@ -22,6 +22,8 @@ struct wlr_drm_interface {
 	bool (*crtc_commit)(struct wlr_drm_connector *conn,
 		const struct wlr_drm_connector_state *state,
 		struct wlr_drm_page_flip *page_flip, uint32_t flags, bool test_only);
+	// Turn off everything
+	bool (*reset)(struct wlr_drm_backend *drm);
 };
 
 extern const struct wlr_drm_interface atomic_iface;
@@ -31,12 +33,12 @@ extern const struct wlr_drm_interface liftoff_iface;
 bool drm_legacy_crtc_set_gamma(struct wlr_drm_backend *drm,
 	struct wlr_drm_crtc *crtc, size_t size, uint16_t *lut);
 
-bool create_mode_blob(struct wlr_drm_backend *drm,
-	struct wlr_drm_connector *conn,
+bool create_mode_blob(struct wlr_drm_connector *conn,
 	const struct wlr_drm_connector_state *state, uint32_t *blob_id);
 bool create_gamma_lut_blob(struct wlr_drm_backend *drm,
 	size_t size, const uint16_t *lut, uint32_t *blob_id);
 bool create_fb_damage_clips_blob(struct wlr_drm_backend *drm,
 	int width, int height, const pixman_region32_t *damage, uint32_t *blob_id);
+bool drm_atomic_reset(struct wlr_drm_backend *drm);
 
 #endif

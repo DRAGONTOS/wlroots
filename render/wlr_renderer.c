@@ -1,4 +1,3 @@
-#define _POSIX_C_SOURCE 200809L
 #include <assert.h>
 #include <fcntl.h>
 #include <stdbool.h>
@@ -49,8 +48,6 @@ void wlr_renderer_destroy(struct wlr_renderer *r) {
 		return;
 	}
 
-	assert(!r->rendering);
-
 	wl_signal_emit_mutable(&r->events.destroy, r);
 
 	if (r->impl && r->impl->destroy) {
@@ -58,41 +55,6 @@ void wlr_renderer_destroy(struct wlr_renderer *r) {
 	} else {
 		free(r);
 	}
-}
-
-bool renderer_bind_buffer(struct wlr_renderer *r, struct wlr_buffer *buffer) {
-	assert(!r->rendering);
-	if (!r->impl->bind_buffer) {
-		return false;
-	}
-	return r->impl->bind_buffer(r, buffer);
-}
-
-bool wlr_renderer_begin_with_buffer(struct wlr_renderer *r,
-		struct wlr_buffer *buffer) {
-	assert(!r->rendering);
-
-	if (!renderer_bind_buffer(r, buffer)) {
-		return false;
-	}
-	if (!r->impl->begin(r, buffer->width, buffer->height)) {
-		renderer_bind_buffer(r, NULL);
-		return false;
-	}
-
-	r->rendering = true;
-	return true;
-}
-
-void wlr_renderer_end(struct wlr_renderer *r) {
-	assert(r->rendering);
-
-	if (r->impl->end) {
-		r->impl->end(r);
-	}
-
-	r->rendering = false;
-	renderer_bind_buffer(r, NULL);
 }
 
 const uint32_t *wlr_renderer_get_shm_texture_formats(struct wlr_renderer *r,
@@ -120,17 +82,6 @@ uint32_t renderer_get_render_buffer_caps(struct wlr_renderer *r) {
 	return r->impl->get_render_buffer_caps(r);
 }
 
-bool wlr_renderer_read_pixels(struct wlr_renderer *r, uint32_t fmt,
-		uint32_t stride, uint32_t width, uint32_t height,
-		uint32_t src_x, uint32_t src_y, uint32_t dst_x, uint32_t dst_y,
-		void *data) {
-	if (!r->impl->read_pixels) {
-		return false;
-	}
-	return r->impl->read_pixels(r, fmt, stride, width, height,
-		src_x, src_y, dst_x, dst_y, data);
-}
-
 bool wlr_renderer_init_wl_shm(struct wlr_renderer *r,
 		struct wl_display *wl_display) {
 	return wlr_shm_create_with_renderer(wl_display, 1, r) != NULL;
@@ -142,18 +93,10 @@ bool wlr_renderer_init_wl_display(struct wlr_renderer *r,
 		return false;
 	}
 
-	if (wlr_renderer_get_dmabuf_texture_formats(r) != NULL) {
-		if (wlr_renderer_get_drm_fd(r) >= 0) {
-			if (wlr_drm_create(wl_display, r) == NULL) {
-				return false;
-			}
-		} else {
-			wlr_log(WLR_INFO, "Cannot get renderer DRM FD, disabling wl_drm");
-		}
-
-		if (wlr_linux_dmabuf_v1_create_with_renderer(wl_display, 4, r) == NULL) {
-			return false;
-		}
+	if (wlr_renderer_get_dmabuf_texture_formats(r) != NULL &&
+			wlr_renderer_get_drm_fd(r) >= 0 &&
+			wlr_linux_dmabuf_v1_create_with_renderer(wl_display, 4, r) == NULL) {
+		return false;
 	}
 
 	return true;

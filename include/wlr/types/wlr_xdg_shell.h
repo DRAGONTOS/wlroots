@@ -95,7 +95,6 @@ struct wlr_xdg_popup {
 	struct wl_list link;
 
 	struct wl_resource *resource;
-	bool sent_initial_configure;
 	struct wlr_surface *parent;
 	struct wlr_seat *seat;
 
@@ -110,6 +109,10 @@ struct wlr_xdg_popup {
 	} events;
 
 	struct wl_list grab_link; // wlr_xdg_popup_grab.popups
+
+	// private state
+
+	struct wlr_surface_synced synced;
 };
 
 // each seat gets a popup grab
@@ -208,6 +211,10 @@ struct wlr_xdg_toplevel {
 		struct wl_signal set_title;
 		struct wl_signal set_app_id;
 	} events;
+
+	// private state
+
+	struct wlr_surface_synced synced;
 };
 
 struct wlr_xdg_surface_configure {
@@ -280,6 +287,8 @@ struct wlr_xdg_surface {
 	void *data;
 
 	// private state
+
+	struct wlr_surface_synced synced;
 
 	struct wl_listener role_resource_destroy;
 };

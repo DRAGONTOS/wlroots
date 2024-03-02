@@ -1,4 +1,3 @@
-#define _POSIX_C_SOURCE 200809L
 #include <assert.h>
 #include <libudev.h>
 #include <stdarg.h>
@@ -445,9 +444,6 @@ static void find_gpus_handle_add(struct wl_listener *listener, void *data) {
 	handler->added = true;
 }
 
-/* Tries to find the primary GPU by checking for the "boot_vga" attribute.
- * If it's not found, it returns the first valid GPU it finds.
- */
 ssize_t wlr_session_find_gpus(struct wlr_session *session,
 		size_t ret_len, struct wlr_device **ret) {
 	const char *explicit = getenv("WLR_DRM_DEVICES");

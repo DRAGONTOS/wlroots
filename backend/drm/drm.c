@@ -1,4 +1,3 @@
-#define _XOPEN_SOURCE 700
 #include <assert.h>
 #include <drm_fourcc.h>
 #include <drm_mode.h>
@@ -114,6 +113,8 @@ bool check_drm_features(struct wlr_drm_backend *drm) {
 
 	if (drm->iface == &legacy_iface) {
 		drm->supports_tearing_page_flips = drmGetCap(drm->fd, DRM_CAP_ASYNC_PAGE_FLIP, &cap) == 0 && cap == 1;
+	} else {
+		drm->supports_tearing_page_flips = drmGetCap(drm->fd, DRM_CAP_ATOMIC_ASYNC_PAGE_FLIP, &cap) == 0 && cap == 1;
 	}
 
 	if (env_parse_bool("WLR_DRM_NO_MODIFIERS")) {
@@ -162,13 +163,13 @@ static bool init_plane(struct wlr_drm_backend *drm,
 		uint64_t blob_id;
 		if (!get_drm_prop(drm->fd, p->id, p->props.in_formats, &blob_id)) {
 			wlr_log(WLR_ERROR, "Failed to read IN_FORMATS property");
-			goto error;
+			return false;
 		}
 
 		drmModePropertyBlobRes *blob = drmModeGetPropertyBlob(drm->fd, blob_id);
 		if (!blob) {
 			wlr_log(WLR_ERROR, "Failed to read IN_FORMATS blob");
-			goto error;
+			return false;
 		}
 
 		drmModeFormatModifierIterator iter = {0};
@@ -198,10 +199,6 @@ static bool init_plane(struct wlr_drm_backend *drm,
 	}
 
 	return true;
-
-error:
-	free(p);
-	return false;
 }
 
 static bool init_planes(struct wlr_drm_backend *drm) {
@@ -328,7 +325,7 @@ void finish_drm_resources(struct wlr_drm_backend *drm) {
 	for (size_t i = 0; i < drm->num_crtcs; ++i) {
 		struct wlr_drm_crtc *crtc = &drm->crtcs[i];
 
-		if (crtc->mode_id) {
+		if (crtc->mode_id && crtc->own_mode_id) {
 			drmModeDestroyPropertyBlob(drm->fd, crtc->mode_id);
 		}
 		if (crtc->gamma_lut) {
@@ -441,6 +438,16 @@ void drm_page_flip_destroy(struct wlr_drm_page_flip *page_flip) {
 	free(page_flip);
 }
 
+static struct wlr_drm_page_flip *drm_page_flip_create(struct wlr_drm_connector *conn) {
+	struct wlr_drm_page_flip *page_flip = calloc(1, sizeof(*page_flip));
+	if (page_flip == NULL) {
+		return NULL;
+	}
+	page_flip->conn = conn;
+	wl_list_insert(&conn->backend->page_flips, &page_flip->link);
+	return page_flip;
+}
+
 static bool drm_crtc_commit(struct wlr_drm_connector *conn,
 		const struct wlr_drm_connector_state *state,
 		uint32_t flags, bool test_only) {
@@ -449,12 +456,10 @@ static bool drm_crtc_commit(struct wlr_drm_connector *conn,
 
 	struct wlr_drm_page_flip *page_flip = NULL;
 	if (flags & DRM_MODE_PAGE_FLIP_EVENT) {
-		page_flip = calloc(1, sizeof(*page_flip));
+		page_flip = drm_page_flip_create(conn);
 		if (page_flip == NULL) {
 			return false;
 		}
-		page_flip->conn = conn;
-		wl_list_insert(&conn->backend->page_flips, &page_flip->link);
 	}
 
 	struct wlr_drm_backend *drm = conn->backend;
@@ -475,6 +480,10 @@ static bool drm_crtc_commit(struct wlr_drm_connector *conn,
 		}
 
 		drm_connector_set_pending_page_flip(conn, page_flip);
+
+		if (state->base->committed & WLR_OUTPUT_STATE_MODE) {
+			conn->refresh = calculate_refresh_rate(&state->mode);
+		}
 	} else {
 		// The set_cursor() hook is a bit special: it's not really synchronized
 		// to commit() or test(). Once set_cursor() returns true, the new
@@ -752,7 +761,7 @@ bool drm_connector_supports_vrr(struct wlr_drm_connector *conn) {
 	return true;
 }
 
-bool drm_connector_commit_state(struct wlr_drm_connector *conn,
+static bool drm_connector_commit_state(struct wlr_drm_connector *conn,
 		const struct wlr_output_state *base) {
 	struct wlr_drm_backend *drm = conn->backend;
 
@@ -1365,6 +1374,11 @@ static struct wlr_drm_connector *create_drm_connector(struct wlr_drm_backend *dr
 	wlr_conn->status = DRM_MODE_DISCONNECTED;
 	wlr_conn->id = drm_conn->connector_id;
 
+	if (!get_drm_connector_props(drm->fd, wlr_conn->id, &wlr_conn->props)) {
+		free(wlr_conn);
+		return false;
+	}
+
 	const char *conn_name =
 		drmModeGetConnectorTypeName(drm_conn->connector_type);
 	if (conn_name == NULL) {
@@ -1451,6 +1465,7 @@ static bool connect_drm_connector(struct wlr_drm_connector *wlr_conn,
 		struct wlr_drm_mode *mode = drm_mode_create(&drm_conn->modes[i]);
 		if (!mode) {
 			wlr_log_errno(WLR_ERROR, "Allocation failed");
+			free(current_modeinfo);
 			wlr_output_state_finish(&state);
 			return false;
 		}
@@ -1465,7 +1480,9 @@ static bool connect_drm_connector(struct wlr_drm_connector *wlr_conn,
 			get_drm_prop(drm->fd, wlr_conn->crtc->id,
 				wlr_conn->crtc->props.mode_id, &mode_id);
 
+			wlr_conn->crtc->own_mode_id = false;
 			wlr_conn->crtc->mode_id = mode_id;
+			wlr_conn->refresh = calculate_refresh_rate(current_modeinfo);
 		}
 
 		wlr_log(WLR_INFO, "  %"PRId32"x%"PRId32" @ %.3f Hz %s",
@@ -1478,7 +1495,7 @@ static bool connect_drm_connector(struct wlr_drm_connector *wlr_conn,
 
 	free(current_modeinfo);
 
-	wlr_output_init(output, &drm->backend, &output_impl, wl_display_get_event_loop(drm->display), &state);
+	wlr_output_init(output, &drm->backend, &output_impl, drm->session->event_loop, &state);
 	wlr_output_state_finish(&state);
 
 	// fill out the modes
@@ -1494,10 +1511,6 @@ static bool connect_drm_connector(struct wlr_drm_connector *wlr_conn,
 		output->subpixel = subpixel_map[drm_conn->subpixel];
 	} else {
 		wlr_log(WLR_ERROR, "Unknown subpixel value: %d", (int)drm_conn->subpixel);
-	}
-
-	if (!get_drm_connector_props(drm->fd, wlr_conn->id, &wlr_conn->props)) {
-		return false;
 	}
 
 	uint64_t non_desktop;
@@ -1704,6 +1717,108 @@ void scan_drm_leases(struct wlr_drm_backend *drm) {
 	drmFree(list);
 }
 
+static void build_current_connector_state(struct wlr_output_state *state,
+		struct wlr_drm_connector *conn) {
+	bool enabled = conn->status != DRM_MODE_DISCONNECTED && conn->output.enabled;
+
+	wlr_output_state_init(state);
+	wlr_output_state_set_enabled(state, enabled);
+	if (!enabled) {
+		return;
+	}
+
+	if (conn->output.current_mode != NULL) {
+		wlr_output_state_set_mode(state, conn->output.current_mode);
+	} else {
+		wlr_output_state_set_custom_mode(state,
+			conn->output.width, conn->output.height, conn->output.refresh);
+	}
+}
+
+/**
+ * Check whether we need to perform a full reset after a VT switch.
+ *
+ * If any connector or plane has a different CRTC, we need to perform a full
+ * reset to restore our mapping. We couldn't avoid a full reset even if we
+ * used a single KMS atomic commit to apply our state: the kernel rejects
+ * commits which migrate a plane from one CRTC to another without going through
+ * an intermediate state where the plane is disabled.
+ */
+static bool skip_reset_for_restore(struct wlr_drm_backend *drm) {
+	struct wlr_drm_connector *conn;
+	wl_list_for_each(conn, &drm->connectors, link) {
+		drmModeConnector *drm_conn = drmModeGetConnectorCurrent(drm->fd, conn->id);
+		if (drm_conn == NULL) {
+			return false;
+		}
+		struct wlr_drm_crtc *crtc = connector_get_current_crtc(conn, drm_conn);
+		drmModeFreeConnector(drm_conn);
+
+		if (crtc != NULL && conn->crtc != crtc) {
+			return false;
+		}
+	}
+
+	for (size_t i = 0; i < drm->num_planes; i++) {
+		struct wlr_drm_plane *plane = &drm->planes[i];
+
+		drmModePlane *drm_plane = drmModeGetPlane(drm->fd, plane->id);
+		if (drm_plane == NULL) {
+			return false;
+		}
+		uint32_t crtc_id = drm_plane->crtc_id;
+		drmModeFreePlane(drm_plane);
+
+		struct wlr_drm_crtc *crtc = NULL;
+		for (size_t i = 0; i < drm->num_crtcs; i++) {
+			if (drm->crtcs[i].id == crtc_id) {
+				crtc = &drm->crtcs[i];
+				break;
+			}
+		}
+		if (crtc == NULL) {
+			continue;
+		}
+
+		bool ok = false;
+		switch (plane->type) {
+		case DRM_PLANE_TYPE_PRIMARY:
+			ok = crtc->primary == plane;
+			break;
+		case DRM_PLANE_TYPE_CURSOR:
+			ok = crtc->cursor == plane;
+			break;
+		}
+		if (!ok) {
+			return false;
+		}
+	}
+
+	return true;
+}
+
+void restore_drm_device(struct wlr_drm_backend *drm) {
+	// The previous DRM master leaves KMS in an undefined state. We need
+	// to restore our own state, but be careful to avoid invalid
+	// configurations. The connector/CRTC mapping may have changed, so
+	// first disable all CRTCs, then light up the ones we were using
+	// before the VT switch.
+	// TODO: better use the atomic API to improve restoration after a VT switch
+	if (!skip_reset_for_restore(drm) && !drm->iface->reset(drm)) {
+		wlr_log(WLR_ERROR, "Failed to reset state after VT switch");
+	}
+
+	struct wlr_drm_connector *conn;
+	wl_list_for_each(conn, &drm->connectors, link) {
+		struct wlr_output_state state;
+		build_current_connector_state(&state, conn);
+		if (!drm_connector_commit_state(conn, &state)) {
+			wlr_drm_conn_log(conn, WLR_ERROR, "Failed to restore state after VT switch");
+		}
+		wlr_output_state_finish(&state);
+	}
+}
+
 static int mhz_to_nsec(int mhz) {
 	return 1000000000000LL / mhz;
 }
@@ -1765,7 +1880,7 @@ static void handle_page_flip(int fd, unsigned seq,
 		.presented = drm->session->active,
 		.when = &present_time,
 		.seq = seq,
-		.refresh = mhz_to_nsec(conn->output.refresh),
+		.refresh = mhz_to_nsec(conn->refresh),
 		.flags = present_flags,
 	};
 	wlr_output_send_present(&conn->output, &present_event);
@@ -1785,7 +1900,7 @@ int handle_drm_event(int fd, uint32_t mask, void *data) {
 
 	if (drmHandleEvent(fd, &event) != 0) {
 		wlr_log(WLR_ERROR, "drmHandleEvent failed");
-		wl_display_terminate(drm->display);
+		wlr_backend_destroy(&drm->backend);
 	}
 	return 1;
 }
@@ -1813,16 +1928,10 @@ int wlr_drm_backend_get_non_master_fd(struct wlr_backend *backend) {
 	assert(backend);
 
 	struct wlr_drm_backend *drm = get_drm_backend_from_backend(backend);
-	char *path = drmGetDeviceNameFromFd2(drm->fd);
-	if (!path) {
-		wlr_log(WLR_ERROR, "Failed to get device name from DRM fd");
-		return -1;
-	}
+	int fd = open(drm->name, O_RDWR | O_CLOEXEC);
 
-	int fd = open(path, O_RDWR | O_CLOEXEC);
 	if (fd < 0) {
 		wlr_log_errno(WLR_ERROR, "Unable to clone DRM fd for client fd");
-		free(path);
 		return -1;
 	}
 

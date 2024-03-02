@@ -1,4 +1,3 @@
-#define _POSIX_C_SOURCE 200809L
 #include <drm_fourcc.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -61,19 +60,26 @@ static void atomic_begin(struct atomic *atom) {
 	}
 }
 
-static bool atomic_commit(struct atomic *atom,
+static bool atomic_commit(struct atomic *atom, struct wlr_drm_backend *drm,
 		struct wlr_drm_connector *conn, struct wlr_drm_page_flip *page_flip,
 		uint32_t flags) {
-	struct wlr_drm_backend *drm = conn->backend;
 	if (atom->failed) {
 		return false;
 	}
 
 	int ret = drmModeAtomicCommit(drm->fd, atom->req, flags, page_flip);
 	if (ret != 0) {
-		wlr_drm_conn_log_errno(conn,
-			(flags & DRM_MODE_ATOMIC_TEST_ONLY) ? WLR_DEBUG : WLR_ERROR,
-			"Atomic commit failed");
+		enum wlr_log_importance log_level = WLR_ERROR;
+		if (flags & DRM_MODE_ATOMIC_TEST_ONLY) {
+			log_level = WLR_DEBUG;
+		}
+
+		if (conn != NULL) {
+			wlr_drm_conn_log_errno(conn, log_level, "Atomic commit failed");
+		} else {
+			wlr_log_errno(log_level, "Atomic commit failed");
+		}
+
 		char *flags_str = atomic_commit_flags_str(flags);
 		wlr_log(WLR_DEBUG, "(Atomic commit flags: %s)",
 			flags_str ? flags_str : "<error>");
@@ -95,15 +101,14 @@ static void atomic_add(struct atomic *atom, uint32_t id, uint32_t prop, uint64_t
 	}
 }
 
-bool create_mode_blob(struct wlr_drm_backend *drm,
-		struct wlr_drm_connector *conn,
+bool create_mode_blob(struct wlr_drm_connector *conn,
 		const struct wlr_drm_connector_state *state, uint32_t *blob_id) {
 	if (!state->active) {
 		*blob_id = 0;
 		return true;
 	}
 
-	if (drmModeCreatePropertyBlob(drm->fd, &state->mode,
+	if (drmModeCreatePropertyBlob(conn->backend->fd, &state->mode,
 			sizeof(drmModeModeInfo), blob_id)) {
 		wlr_log_errno(WLR_ERROR, "Unable to create mode property blob");
 		return false;
@@ -202,14 +207,21 @@ static uint64_t pick_max_bpc(struct wlr_drm_connector *conn, struct wlr_drm_fb *
 	return target_bpc;
 }
 
+static void destroy_blob(struct wlr_drm_backend *drm, uint32_t id) {
+	if (id == 0) {
+		return;
+	}
+	if (drmModeDestroyPropertyBlob(drm->fd, id) != 0) {
+		wlr_log_errno(WLR_ERROR, "Failed to destroy blob");
+	}
+}
+
 static void commit_blob(struct wlr_drm_backend *drm,
 		uint32_t *current, uint32_t next) {
 	if (*current == next) {
 		return;
 	}
-	if (*current != 0) {
-		drmModeDestroyPropertyBlob(drm->fd, *current);
-	}
+	destroy_blob(drm, *current);
 	*current = next;
 }
 
@@ -218,9 +230,7 @@ static void rollback_blob(struct wlr_drm_backend *drm,
 	if (*current == next) {
 		return;
 	}
-	if (next != 0) {
-		drmModeDestroyPropertyBlob(drm->fd, next);
-	}
+	destroy_blob(drm, next);
 }
 
 static void plane_disable(struct atomic *atom, struct wlr_drm_plane *plane) {
@@ -270,7 +280,7 @@ static bool atomic_crtc_commit(struct wlr_drm_connector *conn,
 
 	uint32_t mode_id = crtc->mode_id;
 	if (modeset) {
-		if (!create_mode_blob(drm, conn, state, &mode_id)) {
+		if (!create_mode_blob(conn, state, &mode_id)) {
 			return false;
 		}
 	}
@@ -365,10 +375,14 @@ static bool atomic_crtc_commit(struct wlr_drm_connector *conn,
 		}
 	}
 
-	bool ok = atomic_commit(&atom, conn, page_flip, flags);
+	bool ok = atomic_commit(&atom, drm, conn, page_flip, flags);
 	atomic_finish(&atom);
 
 	if (ok && !test_only) {
+		if (!crtc->own_mode_id) {
+			crtc->mode_id = 0; // don't try to delete previous master's blobs
+		}
+		crtc->own_mode_id = true;
 		commit_blob(drm, &crtc->mode_id, mode_id);
 		commit_blob(drm, &crtc->gamma_lut, gamma_lut);
 
@@ -383,15 +397,38 @@ static bool atomic_crtc_commit(struct wlr_drm_connector *conn,
 		rollback_blob(drm, &crtc->mode_id, mode_id);
 		rollback_blob(drm, &crtc->gamma_lut, gamma_lut);
 	}
+	destroy_blob(drm, fb_damage_clips);
 
-	if (fb_damage_clips != 0 &&
-			drmModeDestroyPropertyBlob(drm->fd, fb_damage_clips) != 0) {
-		wlr_log_errno(WLR_ERROR, "Failed to destroy FB_DAMAGE_CLIPS property blob");
+	return ok;
+}
+
+bool drm_atomic_reset(struct wlr_drm_backend *drm) {
+	struct atomic atom;
+	atomic_begin(&atom);
+
+	for (size_t i = 0; i < drm->num_crtcs; i++) {
+		struct wlr_drm_crtc *crtc = &drm->crtcs[i];
+		atomic_add(&atom, crtc->id, crtc->props.mode_id, 0);
+		atomic_add(&atom, crtc->id, crtc->props.active, 0);
 	}
+
+	struct wlr_drm_connector *conn;
+	wl_list_for_each(conn, &drm->connectors, link) {
+		atomic_add(&atom, conn->id, conn->props.crtc_id, 0);
+	}
+
+	for (size_t i = 0; i < drm->num_planes; i++) {
+		plane_disable(&atom, &drm->planes[i]);
+	}
+
+	uint32_t flags = DRM_MODE_ATOMIC_ALLOW_MODESET;
+	bool ok = atomic_commit(&atom, drm, NULL, NULL, flags);
+	atomic_finish(&atom);
 
 	return ok;
 }
 
 const struct wlr_drm_interface atomic_iface = {
 	.crtc_commit = atomic_crtc_commit,
+	.reset = drm_atomic_reset,
 };

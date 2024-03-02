@@ -1,6 +1,3 @@
-#ifndef _POSIX_C_SOURCE
-#define _POSIX_C_SOURCE 200809L
-#endif
 #include <assert.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -74,6 +71,7 @@ static const char *const atom_map[ATOM_LAST] = {
 	[NET_WM_WINDOW_TYPE_MENU] = "_NET_WM_WINDOW_TYPE_MENU",
 	[NET_WM_WINDOW_TYPE_NOTIFICATION] = "_NET_WM_WINDOW_TYPE_NOTIFICATION",
 	[NET_WM_WINDOW_TYPE_SPLASH] = "_NET_WM_WINDOW_TYPE_SPLASH",
+	[NET_WM_WINDOW_TYPE_DESKTOP] = "_NET_WM_WINDOW_TYPE_DESKTOP",
 	[DND_SELECTION] = "XdndSelection",
 	[DND_AWARE] = "XdndAware",
 	[DND_STATUS] = "XdndStatus",
@@ -133,6 +131,34 @@ static int xwayland_surface_handle_ping_timeout(void *data) {
 	return 1;
 }
 
+static void read_surface_client_id(struct wlr_xwm *xwm,
+		struct wlr_xwayland_surface *xsurface,
+		xcb_res_query_client_ids_cookie_t cookie) {
+	xcb_res_query_client_ids_reply_t *reply = xcb_res_query_client_ids_reply(
+		xwm->xcb_conn, cookie, NULL);
+	if (reply == NULL) {
+		return;
+	}
+
+	uint32_t *pid = NULL;
+	xcb_res_client_id_value_iterator_t iter =
+		xcb_res_query_client_ids_ids_iterator(reply);
+	while (iter.rem > 0) {
+		if (iter.data->spec.mask & XCB_RES_CLIENT_ID_MASK_LOCAL_CLIENT_PID &&
+				xcb_res_client_id_value_value_length(iter.data) > 0) {
+			pid = xcb_res_client_id_value_value(iter.data);
+			break;
+		}
+		xcb_res_client_id_value_next(&iter);
+	}
+	if (pid == NULL) {
+		free(reply);
+		return;
+	}
+	xsurface->pid = *pid;
+	free(reply);
+}
+
 static struct wlr_xwayland_surface *xwayland_surface_create(
 		struct wlr_xwm *xwm, xcb_window_t window_id, int16_t x, int16_t y,
 		uint16_t width, uint16_t height, bool override_redirect) {
@@ -144,6 +170,15 @@ static struct wlr_xwayland_surface *xwayland_surface_create(
 
 	xcb_get_geometry_cookie_t geometry_cookie =
 		xcb_get_geometry(xwm->xcb_conn, window_id);
+
+	xcb_res_query_client_ids_cookie_t client_id_cookie;
+	if (xwm->xres) {
+		xcb_res_client_id_spec_t spec = {
+			.client = window_id,
+			.mask = XCB_RES_CLIENT_ID_MASK_LOCAL_CLIENT_PID
+		};
+		client_id_cookie = xcb_res_query_client_ids(xwm->xcb_conn, 1, &spec);
+	}
 
 	uint32_t values[1];
 	values[0] =
@@ -204,6 +239,10 @@ static struct wlr_xwayland_surface *xwayland_surface_create(
 	}
 
 	wl_list_insert(&xwm->surfaces, &surface->link);
+
+	if (xwm->xres) {
+		read_surface_client_id(xwm, surface, client_id_cookie);
+	}
 
 	wl_signal_emit_mutable(&xwm->xwayland->events.new_surface, surface);
 
@@ -598,34 +637,6 @@ static void read_surface_parent(struct wlr_xwm *xwm,
 	wl_signal_emit_mutable(&xsurface->events.set_parent, NULL);
 }
 
-static void read_surface_client_id(struct wlr_xwm *xwm,
-		struct wlr_xwayland_surface *xsurface,
-		xcb_res_query_client_ids_cookie_t cookie) {
-	xcb_res_query_client_ids_reply_t *reply = xcb_res_query_client_ids_reply(
-		xwm->xcb_conn, cookie,  NULL);
-	if (reply == NULL) {
-		return;
-	}
-
-	uint32_t *pid = NULL;
-	xcb_res_client_id_value_iterator_t iter =
-		xcb_res_query_client_ids_ids_iterator(reply);
-	while (iter.rem > 0) {
-		if (iter.data->spec.mask & XCB_RES_CLIENT_ID_MASK_LOCAL_CLIENT_PID &&
-				xcb_res_client_id_value_value_length(iter.data) > 0) {
-			pid = xcb_res_client_id_value_value(iter.data);
-			break;
-		}
-		xcb_res_client_id_value_next(&iter);
-	}
-	if (pid == NULL) {
-		free(reply);
-		return;
-	}
-	xsurface->pid = *pid;
-	free(reply);
-}
-
 static void read_surface_window_type(struct wlr_xwm *xwm,
 		struct wlr_xwayland_surface *xsurface,
 		xcb_get_property_reply_t *reply) {
@@ -924,28 +935,15 @@ static void xwayland_surface_associate(struct wlr_xwm *xwm,
 			props[i], XCB_ATOM_ANY, 0, 2048);
 	}
 
-	xcb_res_query_client_ids_cookie_t client_id_cookie;
-	if (xwm->xres) {
-		xcb_res_client_id_spec_t spec = {
-			.client = xsurface->window_id,
-			.mask = XCB_RES_CLIENT_ID_MASK_LOCAL_CLIENT_PID
-		};
-		client_id_cookie = xcb_res_query_client_ids(xwm->xcb_conn, 1, &spec);
-	}
-
 	for (size_t i = 0; i < sizeof(props) / sizeof(props[0]); i++) {
 		xcb_get_property_reply_t *reply =
 			xcb_get_property_reply(xwm->xcb_conn, cookies[i], NULL);
 		if (reply == NULL) {
 			wlr_log(WLR_ERROR, "Failed to get window property");
-			return;
+			continue;
 		}
 		read_surface_property(xwm, xsurface, props[i], reply);
 		free(reply);
-	}
-
-	if (xwm->xres) {
-		read_surface_client_id(xwm, xsurface, client_id_cookie);
 	}
 
 	wl_signal_emit_mutable(&xsurface->events.associate, NULL);
@@ -2323,6 +2321,7 @@ bool wlr_xwayland_or_surface_wants_focus(
 		NET_WM_WINDOW_TYPE_NOTIFICATION,
 		NET_WM_WINDOW_TYPE_POPUP_MENU,
 		NET_WM_WINDOW_TYPE_SPLASH,
+		NET_WM_WINDOW_TYPE_DESKTOP,
 		NET_WM_WINDOW_TYPE_TOOLTIP,
 		NET_WM_WINDOW_TYPE_UTILITY,
 	};
